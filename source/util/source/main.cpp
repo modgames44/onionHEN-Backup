@@ -1,0 +1,181 @@
+/* Copyright (C) 2025 OnionHEN / LightningMods
+
+This program is free software; you can redistribute it and/or modify it
+under the terms of the GNU General Public License as published by the
+Free Software Foundation; either version 3, or (at your option) any
+later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program; see the file COPYING. If not, see
+<http://www.gnu.org/licenses/>.  */
+
+#include "ipc.hpp"
+#include "cheats/cheat_service.hpp"
+#include <onion/settings.hpp>
+#include <onion/log_settings.hpp>
+#include <onion/platform.h>
+#include <onion/ucred.h>
+#include <onion/proc_query.h>
+#include <onion/ready.h>
+extern "C" {
+#include "freebsd-helper.h"
+}
+#include <cstdint>
+#include <hijacker/hijacker.hpp>
+#include <sys/_pthreadtypes.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+
+typedef struct app_info {
+    uint32_t app_id;
+    uint64_t unknown1;
+    uint32_t app_type;
+    char     title_id[10];
+    char     unknown2[0x3c];
+} app_info_t;
+
+extern "C" {
+
+    #include "faulthandler.h"
+  #include "common_utils.h"
+  #include <ps5/payload.h>
+
+  int sceKernelGetAppInfo(pid_t pid, app_info_t * info);
+  int sceKernelGetProcessName(int pid, char * out);
+  int _sceApplicationGetAppId(int pid, uint32_t * appId);
+  int sceSystemServiceParamGetInt(int param_id, int *value);
+
+  // set_proc_authid / get_proc_by_pid: libonion_proc
+}
+
+extern bool is_handler_enabled;
+
+onion::SettingsStore g_settings;
+void start_ip_thread(void);
+void patch_checker(bool rest_resume);
+void* IPC_loop(void* args);
+bool shellui_patch(void);
+
+extern atomic_bool no_network_rest_mode_action;
+
+jmp_buf g_catch_buf;
+uintptr_t kernel_base = 0;
+void* __stack_chk_guard = (void*)0xdeadbeef;
+
+static void cleanup(void) {
+    onion_notify(true, "notify.util.crash_recovering");
+    exit(1);
+}
+
+void __stack_chk_fail(void) {
+    LOG_DEBUG("Stack smashing detected.");
+}
+
+bool LoadSettings() {
+    onion::Settings s{};
+    if (!onion::settings_load(&s)) {
+        LOG_ERROR("config.ini missing; using defaults (path primary=%s)",
+                     onion::kConfigPathPrimary);
+    } else {
+        LOG_INFO("Loaded settings from %s", onion::settings_last_loaded_path());
+    }
+
+    const onion_log_level effective = onion::apply_log_settings(s);
+    if (effective != static_cast<onion_log_level>(s.log_level)) {
+        LOG_WARN("log level '%s' unavailable in this build; using '%s'",
+                     onion_log_level_name(static_cast<onion_log_level>(s.log_level)),
+                     onion_log_level_name(effective));
+    }
+
+    g_settings.store(s);
+    int system_language = 1;
+    if (s.ui_lang == onion::kUiLanguageSystem)
+        (void)sceSystemServiceParamGetInt(1, &system_language);
+    onion_notify_apply_ui_language(s.ui_lang, system_language);
+    /* Missing file is not an error — defaults were applied. */
+    return true;
+}
+
+int main(void) {
+    /* Raw elfldr uploads default to "payload.elf"; publish our stable name. */
+    (void)syscall(SYS_thr_set_name, -1, "onion_util.elf");
+
+    pthread_t ipc_server = 0;
+    char tmp_buf[200];
+    
+    sceNetCtlInit();
+    sceUserServiceInitialize(NULL);
+    onion_log_configure(
+        "OnionHEN utils", "/data/OnionHEN/OnionHEN_util_daemon.log");
+    /* Real linked kernel export (not a dlsym function-pointer variable). */
+    onion_notify_set_send(reinterpret_cast<onion_notify_send_fn>(
+        sceKernelSendNotificationRequest));
+    LOG_INFO("util daemon entered");
+
+    if (setjmp(g_catch_buf) == 0)
+        LOG_INFO("jump has been set");
+    else
+        onion_notify(true, "notify.crash.resolved");
+
+    LOG_INFO("Registering signal handler...");
+    fault_handler_init(cleanup);
+    LOG_INFO("   Success!");
+
+    payload_args_t* args = payload_get_args();
+    kernel_base = args->kdata_base_addr;
+    /* pt_* / code-cave require PTRACE_AUTHID (not DEBUG_AUTHID). */
+    set_ucred_to_ptrace();
+
+    unlink("/data/OnionHEN/OnionHEN_util_crash.log");
+
+    LOG_INFO("=========== starting OnionHEN Utilities... ===========");
+
+    LoadSettings();
+
+    start_ip_thread();
+    pthread_create(&ipc_server, NULL, IPC_loop, NULL);
+    /* IPC thread is up — publish ready for bootstrapper/daemon consumers */
+    onion_ready_signal(ONION_READY_UTIL);
+
+    if (onion_ready_is_set(ONION_FLAG_UTIL_BOOTED)) {
+        /* onion_util.elf restarted mid-session (crash recover / re-launch) — not rest. */
+        LOG_WARN("util already booted once — toolbox reinject (not rest)");
+        patch_checker(/*rest_resume=*/false);
+    }
+    /* Mark that util completed cold start (typed flag; replaces util_first_boot file). */
+    onion_ready_signal(ONION_FLAG_UTIL_BOOTED);
+
+    LOG_INFO("Initializing cheat engine...");
+    onion::cheats::CheatService::instance().ensureDir();
+
+    for (;;) {
+        // Rest Mode: wait until network is back, then reinject toolbox if needed.
+        if (get_ip_address(&tmp_buf[0], sizeof(tmp_buf)) < 0) {
+            sleep(1);
+
+            bool fail1 = get_ip_address(&tmp_buf[0], sizeof(tmp_buf)) < 0;
+            if (!fail1)
+                continue;
+
+            sleep(2);
+
+            bool fail2 = get_ip_address(&tmp_buf[0], sizeof(tmp_buf)) < 0;
+            if (!fail2)
+                continue;
+
+            if (no_network_rest_mode_action) {
+                patch_checker(/*rest_resume=*/true);
+            }
+            continue;
+        }
+        no_network_rest_mode_action = false;
+        sleep(1);
+    }
+
+    return 0;
+}

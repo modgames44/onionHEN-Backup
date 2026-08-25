@@ -1,0 +1,110 @@
+# OnionHEN configuration
+#
+# This file uses semantic schema version 1.
+# Boolean fields accept true or false.
+# Keep key names lowercase and do not add inline comments after values.
+
+[meta]
+# schema_version identifies this config format.
+# Available values: 1
+schema_version=1
+
+[toolbox]
+# language controls the Toolbox UI and notification language.
+# Available values: system, zh-Hans, zh-Hant, en, ja, ko, fr, de, it, es, pt-BR, pl, ru, ar, th
+# system follows the PS5 system language when it can be detected.
+language=system
+
+[startup]
+# open_after_load chooses which page opens after OnionHEN finishes loading.
+# Available values: none, home_menu
+open_after_load=none
+
+[logging]
+# level controls how much OnionHEN records to its log files.
+# Available values: off, error, warn, info, debug, trace
+# Raise to debug when reproducing an issue for a bug report.
+# Release builds compile out trace, so trace behaves as debug.
+level=info
+
+[home_screen]
+# show_title_ids displays app Title IDs on the PS5 home screen.
+# Available values: true, false
+show_title_ids=false
+
+[game_menu]
+# show_onionhen_options adds OnionHEN entries to the game options menu.
+# Available values: true, false
+show_onionhen_options=true
+
+[rest_mode]
+# resume_reinject_delay_seconds waits before Toolbox reinjection after resume.
+# Available values: 0 or a positive number of seconds.
+resume_reinject_delay_seconds=10
+
+[cheats]
+# memory_backend selects the cheat memory access implementation.
+# Available values: default, libhijacker
+memory_backend=default
+
+[app_jailbreak]
+# enabled controls the App lifecycle and sandbox event listeners. When false,
+# OnionHEN does not register either listener.
+# Available values: true, false
+enabled=true
+# debug_notifications shows a notification when OnionHEN jailbreaks an app.
+# Available values: true, false
+debug_notifications=false
+# exact_title_ids is a comma-separated list of exact 9-character Title IDs.
+# Use none to disable all exact Title IDs; maximum 20 entries.
+exact_title_ids=ITEM00001,NPXS39041,PKGI13337,PKGI12345,TOOL00001
+# title_id_prefixes is a comma-separated list of uppercase prefixes.
+# Use none to disable prefix matching; bare wildcards are not accepted.
+title_id_prefixes=LAPY
+
+[cooling]
+# fan_control chooses between stock fan behavior and a manual threshold.
+# Available values: automatic, temperature_threshold
+fan_control=automatic
+# temperature_threshold_celsius is used when fan_control is temperature_threshold.
+# Available values: 0 through 100
+temperature_threshold_celsius=77
+
+[overlay]
+# enabled shows or hides the complete game monitor bar.
+# Available values: true, false
+enabled=true
+# background controls the translucent panel behind the monitor bar.
+# Available values: true, false
+background=true
+# edge chooses the screen edge used by the monitor bar.
+# Available values: top, bottom
+edge=top
+# show_cpu displays CPU temperature and usage.
+# Available values: true, false
+show_cpu=true
+# cpu_usage_mode controls whether CPU usage is averaged or per core.
+# Available values: average, per_core
+cpu_usage_mode=average
+# show_gpu displays GPU temperature and usage.
+# Available values: true, false
+show_gpu=true
+# show_memory displays memory usage.
+# Available values: true, false
+show_memory=true
+# show_ip_address displays the console LAN IP address.
+# Available values: true, false
+show_ip_address=false
+
+[shortcuts]
+# cheats_menu controls the shortcut that opens the cheats menu.
+# Available values: off, r3_l3, l2_triangle, long_options, long_share, share
+cheats_menu=off
+# toolbox controls the shortcut that opens the OnionHEN Toolbox.
+# Available values: off, l2_r3, long_share, share
+toolbox=off
+
+[kstuff]
+# autoload loads kstuff when OnionHEN starts.
+# Available values: true, false
+autoload=true

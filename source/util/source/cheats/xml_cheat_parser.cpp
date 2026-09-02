@@ -38,6 +38,7 @@ const char *findXmlTagValue(const char *start, const char *tag, char *out,
   }
   std::memcpy(out, open, len);
   out[len] = '\0';
+  onion_cheat_xml_unescape(out);
   return close + std::strlen(close_tag);
 }
 
@@ -70,6 +71,7 @@ int findXmlAttr(const char *start, const char *tag, const char *attr, char *out,
   }
   std::memcpy(out, val, len);
   out[len] = '\0';
+  onion_cheat_xml_unescape(out);
   return 0;
 }
 
@@ -90,7 +92,7 @@ int parseXmlMutating(char *xml, onion_cheat_file_t &out) {
   char process[128];
   char game_name[128];
 
-  LOG_INFO("[engine] parse_xml begin");
+  LOG_DEBUG("[engine] parse_xml begin");
   onion_cheat_file_clear(&out);
   onion_cheat_replace_all(xml, 65536, "&lt;", "<");
   onion_cheat_replace_all(xml, 65536, "&gt;", ">");
@@ -112,8 +114,8 @@ int parseXmlMutating(char *xml, onion_cheat_file_t &out) {
       moder[0] != '\0') {
     onion_cheat_file_add_author(&out, moder);
   }
-  LOG_INFO("[engine] parse_xml trainer process=%s game=%s", out.process,
-               out.name);
+  LOG_DEBUG("[engine] parse_xml trainer process=%s game=%s", out.process,
+            out.name);
 
   while ((cursor = std::strstr(cursor, "<Cheat ")) != nullptr) {
     const char *cheat_end = std::strstr(cursor, "</Cheat>");
@@ -173,8 +175,7 @@ int parseXmlMutating(char *xml, onion_cheat_file_t &out) {
       findXmlTagValue(line_cursor, "Absolute", absolute, sizeof(absolute));
 
       if (offset[0] == '\0' || on[0] == '\0' || off[0] == '\0') {
-        LOG_INFO("[engine] parse_xml incomplete patch cheat=%s",
-                     entry->name);
+        LOG_WARN("[engine] parse_xml incomplete patch cheat=%s", entry->name);
         line_cursor = line_end + 12;
         continue;
       }
@@ -208,14 +209,14 @@ int parseXmlMutating(char *xml, onion_cheat_file_t &out) {
     }
 
     if (entry->patch_count > 0) {
-      LOG_INFO("[engine] parse_xml cheat=%s patches=%zu", entry->name,
-                   entry->patch_count);
+      LOG_TRACE("[engine] parse_xml cheat=%s patches=%zu", entry->name,
+                entry->patch_count);
       out.cheat_count++;
     }
     cursor = cheat_end + 8;
   }
 
-  LOG_INFO("[engine] parse_xml done cheats=%zu", out.cheat_count);
+  LOG_DEBUG("[engine] parse_xml done cheats=%zu", out.cheat_count);
   return out.cheat_count > 0 ? 0 : -1;
 }
 

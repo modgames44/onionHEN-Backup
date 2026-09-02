@@ -79,4 +79,5 @@ __asm__(".intel_syntax noprefix\n"
     ".align  4\n"
     "kstuff_size:\n"
     ".int    kstuff_end - kstuff_start\n"
+
 );

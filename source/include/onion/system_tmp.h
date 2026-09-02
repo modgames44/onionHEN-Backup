@@ -27,6 +27,7 @@
   ONION_SYSTEM_TMP_PID_ROOT "/onion_elfldr_9020.busy"
 #define ONION_SYSTEM_TMP_APP_LAUNCHED ONION_SYSTEM_TMP_ROOT "/app_launched"
 #define ONION_SYSTEM_TMP_PATCH_PLUGIN ONION_SYSTEM_TMP_ROOT "/patch_plugin"
+#define ONION_SYSTEM_TMP_FPS_SAMPLE ONION_SYSTEM_TMP_ROOT "/fps_sample"
 
 static inline bool onion_system_tmp_pid_path(char *out, size_t out_sz,
                                              const char *key) {

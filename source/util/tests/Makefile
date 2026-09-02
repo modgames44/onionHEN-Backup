@@ -32,6 +32,7 @@ COMMON_FLAGS := -Wall -Wextra -g -O0 $(DEPFLAGS) -DONION_HOST_TEST=1 -DCBC=1 \
 	-I$(REPO_ROOT)/source/libonion_ipc/include \
 	-I$(REPO_ROOT)/source/libonion_detour/include \
 	-I$(REPO_ROOT)/source/libonion_ready \
+	-I$(REPO_ROOT)/source/libonion_fps/include \
 	-I$(REPO_ROOT)/source/daemon/include \
 	-I$(THIRD_PARTY_ROOT)/cjson \
 	-I$(THIRD_PARTY_ROOT)/cheat_support \
@@ -53,6 +54,7 @@ LDFLAGS := $(KEYSTONE_LDFLAGS) -pthread
 
 # Production sources under test
 PROD_C_SRCS := \
+	$(UTIL_ROOT)/source/util_language.c \
 	$(UTIL_ROOT)/source/cheats/cheat_engine_utils.c \
 	$(UTIL_ROOT)/source/cheats/cheat_engine_parser_shnext.c \
 	$(UTIL_ROOT)/source/cheats/cheat_flatten.c \
@@ -71,13 +73,22 @@ PROD_CXX_SRCS := \
 	$(UTIL_ROOT)/source/cheats/shn_ext_cheat_parser.cpp \
 	$(UTIL_ROOT)/source/cheats/cheat_parser_factory.cpp \
 	$(UTIL_ROOT)/source/cheats/cheat_repository.cpp \
-	$(UTIL_ROOT)/source/http_github.cpp \
+	$(UTIL_ROOT)/source/cheats/sync/catalog_hen_collection.cpp \
+	$(UTIL_ROOT)/source/cheats/sync/catalog_registry.cpp \
+	$(UTIL_ROOT)/source/cheats/sync/mirror_github.cpp \
+	$(UTIL_ROOT)/source/cheats/sync/mirror_cnb.cpp \
+	$(UTIL_ROOT)/source/cheats/sync/mirror_factory.cpp \
+	$(UTIL_ROOT)/source/cheats/sync/cheat_sync_engine.cpp \
+	$(UTIL_ROOT)/source/cheats/sync/cheat_sync_service.cpp \
+	$(UTIL_ROOT)/source/cheats/sync/http_transport_ps5.cpp \
+	$(UTIL_ROOT)/source/cheats/sync/zip_archive.cpp \
 	$(THIRD_PARTY_ROOT)/cjson/cJSON.cpp \
 	$(REPO_ROOT)/source/libonion_settings/source/settings.cpp \
 	$(REPO_ROOT)/source/libonion_ipc/source/ipc_server.cpp \
 	$(REPO_ROOT)/source/shellui/src/ps5_settings_ui.cpp \
 	$(REPO_ROOT)/source/shellui/src/toolbox_route.cpp \
-	$(REPO_ROOT)/source/shellui/src/toolbox_i18n.cpp
+	$(REPO_ROOT)/source/shellui/src/toolbox_i18n.cpp \
+	$(REPO_ROOT)/source/libonion_fps/source/fps_formula.cpp
 
 TEST_C_SRCS := \
 	test_harness.c \
@@ -94,13 +105,16 @@ TEST_C_SRCS := \
 	test_platform_log.c \
 	test_platform_net.c \
 	test_platform_notify.c \
-	test_toolbox_timing.c \
+	test_util_language.c \
 	test_hijack_retry.c \
 	stubs/host_stubs.c
 
 TEST_CXX_SRCS := \
 	test_cheat_parsers.cpp \
 	test_cheat_repository.cpp \
+	test_git_mirror_factory.cpp \
+	test_cheat_catalog.cpp \
+	test_cheat_sync.cpp \
 	test_settings.cpp \
 	test_msg_protocol.cpp \
 	test_app_jailbreak_policy.cpp \
@@ -111,11 +125,12 @@ TEST_CXX_SRCS := \
 	test_onpress_policy.cpp \
 	test_toolbox_helpers.cpp \
 	test_toolbox_i18n.cpp \
-	test_toolbox_injection.cpp \
-	test_overlay_text_metrics.cpp \
+  test_toolbox_injection.cpp \
+  test_overlay_text_metrics.cpp \
+  test_overlay_layout.cpp \
+  test_fps_formula.cpp \
 	test_trampoline_arena.cpp \
 	test_hook_lifecycle.cpp \
-	test_http_github.cpp \
 	test_hotpatch.cpp \
 	test_x64_relocator.cpp \
 	test_main.cpp
@@ -144,6 +159,7 @@ PROD_CXX_OBJS += $(BUILD_DIR)/prod/shellui/hook_lifecycle.o
 PROD_CXX_OBJS += $(BUILD_DIR)/prod/shellui/ps5_settings_ui.o
 PROD_CXX_OBJS += $(BUILD_DIR)/prod/shellui/toolbox_route.o
 PROD_CXX_OBJS += $(BUILD_DIR)/prod/shellui/toolbox_i18n.o
+PROD_CXX_OBJS += $(BUILD_DIR)/prod/libonion_fps/fps_formula.o
 
 TEST_C_OBJS := $(patsubst %.c,$(BUILD_DIR)/tests/%.o,$(TEST_C_SRCS))
 TEST_CXX_OBJS := $(patsubst %.cpp,$(BUILD_DIR)/tests/%.o,$(TEST_CXX_SRCS))
@@ -231,6 +247,10 @@ $(NOTIFY_I18N_CATALOG): $(I18N_DIR)/generate_catalog.py $(I18N_JSON) | $(BUILD_D
 		--output $@
 
 $(BUILD_DIR)/prod/shellui/toolbox_i18n.o: $(REPO_ROOT)/source/shellui/src/toolbox_i18n.cpp $(I18N_CATALOG) | $(BUILD_DIR)
+	@mkdir -p $(dir $@)
+	$(HOST_CXX) $(CXXFLAGS) -c -o $@ $<
+
+$(BUILD_DIR)/prod/libonion_fps/fps_formula.o: $(REPO_ROOT)/source/libonion_fps/source/fps_formula.cpp | $(BUILD_DIR)
 	@mkdir -p $(dir $@)
 	$(HOST_CXX) $(CXXFLAGS) -c -o $@ $<
 

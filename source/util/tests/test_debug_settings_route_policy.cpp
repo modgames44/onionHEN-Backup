@@ -2,12 +2,53 @@
 #include "test_harness.h"
 
 #include "welcome_toast.hpp"
+#include "onion_cjson.hpp"
 #include <onion/debug_settings_route_policy.hpp>
 
 #include <string>
 
 using onion::debug_settings_route::DebugSettingsRoutePolicy;
 using onion::debug_settings_route::UriKind;
+
+namespace {
+
+struct WelcomeFields {
+  bool valid = false;
+  std::string message;
+  std::string sub_message;
+  std::string action_name;
+  std::string action_url;
+};
+
+WelcomeFields parse_welcome(const std::string &json) {
+  WelcomeFields fields;
+  onion_cjson::Root root(json);
+  const cJSON *raw = root ? onion_cjson::item(root.get(), "rawData") : nullptr;
+  const cJSON *view = raw ? onion_cjson::item(raw, "viewData") : nullptr;
+  const cJSON *message = view ? onion_cjson::item(view, "message") : nullptr;
+  const cJSON *sub_message =
+      view ? onion_cjson::item(view, "subMessage") : nullptr;
+  const cJSON *actions = view ? onion_cjson::item(view, "actions") : nullptr;
+  const cJSON *action = cJSON_IsArray(actions)
+                            ? cJSON_GetArrayItem(actions, 0)
+                            : nullptr;
+  const cJSON *params = action ? onion_cjson::item(action, "parameters") : nullptr;
+  const char *message_text = onion_cjson::string_item(message, "body");
+  const char *sub_message_text = onion_cjson::string_item(sub_message, "body");
+  const char *action_name = onion_cjson::string_item(action, "actionName");
+  const char *action_url = onion_cjson::string_item(params, "actionUrl");
+  if (!message_text || !sub_message_text || !action_name || !action_url) {
+    return fields;
+  }
+  fields.valid = true;
+  fields.message = message_text;
+  fields.sub_message = sub_message_text;
+  fields.action_name = action_name;
+  fields.action_url = action_url;
+  return fields;
+}
+
+} // namespace
 
 static int test_0403_uses_standard_route(void) {
   const DebugSettingsRoutePolicy policy =
@@ -426,35 +467,38 @@ static int test_settings_bundle_rejects_length_mismatch(void) {
 }
 
 static int test_welcome_toast_replaces_toolbox_uri(void) {
-  const std::string json = onion::daemon::make_welcome_toast_json(
-      "pssettings:play?function=debug_settings_old");
-  TEST_ASSERT_TRUE(json.find("__ONIONHEN_TOOLBOX_URI__") == std::string::npos);
-  TEST_ASSERT_TRUE(json.find("pssettings:play?function=debug_settings_old") !=
-                   std::string::npos);
-  TEST_ASSERT_TRUE(json.find("\"body\": \"Welcome to OnionHEN\"") !=
-                   std::string::npos);
-  TEST_ASSERT_TRUE(json.find("\"body\": \"" ONIONHEN_VERSION " made by "
-                             ONIONHEN_AUTHOR "\"") != std::string::npos);
+  const char *uri =
+      "pssettings:play?function=debug_settings_old&label=\"quoted\"";
+  const WelcomeFields fields = parse_welcome(
+      onion::daemon::make_welcome_toast_json(uri));
+  TEST_ASSERT_TRUE(fields.valid);
+  TEST_ASSERT_STREQ(uri, fields.action_url.c_str());
+  TEST_ASSERT_STREQ("Welcome to OnionHEN", fields.sub_message.c_str());
+  TEST_ASSERT_STREQ(ONIONHEN_VERSION " made by " ONIONHEN_AUTHOR,
+                    fields.message.c_str());
   return 0;
 }
 
 static int test_welcome_toast_fallback_uri(void) {
-  const std::string json = onion::daemon::make_welcome_toast_json("");
-  TEST_ASSERT_TRUE(json.find("pssettings:play?function=debug_settings") !=
-                   std::string::npos);
+  const WelcomeFields fields =
+      parse_welcome(onion::daemon::make_welcome_toast_json(""));
+  TEST_ASSERT_TRUE(fields.valid);
+  TEST_ASSERT_STREQ("pssettings:play?function=debug_settings",
+                    fields.action_url.c_str());
   return 0;
 }
 
 static int test_welcome_toast_localizes_text(void) {
   onion_notify_set_language(ONION_NOTIFY_LANG_ZH_HANS);
-  const std::string json = onion::daemon::make_welcome_toast_json(
-      "pssettings:play?function=debug_settings");
-  TEST_ASSERT_TRUE(json.find("\"body\": \"欢迎使用 OnionHEN\"") !=
-                   std::string::npos);
-  TEST_ASSERT_TRUE(json.find("\"actionName\": \"前往 OnionHEN 工具箱\"") !=
-                   std::string::npos);
-  TEST_ASSERT_TRUE(json.find(std::string(ONIONHEN_VERSION) + " · 作者：" +
-                             ONIONHEN_AUTHOR) != std::string::npos);
+  const WelcomeFields fields = parse_welcome(
+      onion::daemon::make_welcome_toast_json(
+          "pssettings:play?function=debug_settings"));
+  TEST_ASSERT_TRUE(fields.valid);
+  TEST_ASSERT_STREQ("欢迎使用 OnionHEN", fields.sub_message.c_str());
+  TEST_ASSERT_STREQ("前往 OnionHEN 工具箱", fields.action_name.c_str());
+  const std::string expected =
+      std::string(ONIONHEN_VERSION) + " · 作者：" + ONIONHEN_AUTHOR;
+  TEST_ASSERT_STREQ(expected.c_str(), fields.message.c_str());
   onion_notify_set_language(ONION_NOTIFY_LANG_EN);
   return 0;
 }

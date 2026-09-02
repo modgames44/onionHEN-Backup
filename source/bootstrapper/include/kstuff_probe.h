@@ -1,6 +1,6 @@
 /* Copyright (C) 2025 OnionHEN / LightningMods
  *
- * Detect whether kstuff is already present (process and/or patches).
+ * Detect whether the kstuff capability is already active.
  */
 #pragma once
 
@@ -11,8 +11,8 @@ extern "C" {
 #endif
 
 /**
- * True if a kstuff process is running, or if userland mprotect already
- * succeeds (kernel patches active). Used to skip a second elfldr load.
+ * True when userland mprotect succeeds with the kernel patches active. Process
+ * names are not ownership evidence because user Payload names are unrestricted.
  */
 bool kstuff_already_running(void);
 

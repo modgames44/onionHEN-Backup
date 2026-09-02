@@ -48,6 +48,7 @@ along with this program; see the file COPYING. If not, see
 #include "startup_navigation.hpp"
 #include "welcome_toast.hpp"
 #include <onion/debug_settings_route_policy.hpp>
+#include <onion/fault_frame.h>
 #include <onion/ready.h>
 
 #define MSG_NOSIGNAL 0x20000 /* do not generate SIGPIPE on EOF. */
@@ -126,7 +127,6 @@ uintptr_t kernel_base = 0;
 
 // Function declarations
 int launchApp(const char *titleId);
-bool enable_toolbox();
 void sig_handler(int signo);
 int elfldr_raise_privileges(pid_t pid);
 extern void makenewapp();
@@ -156,6 +156,15 @@ void start_worker_threads(pthread_t* fifo_thr, pthread_t* msg_thr) {
   pthread_t fan_thr = nullptr;
   pthread_create(&fan_thr, nullptr, fan_maintenance_thread, nullptr);
   pthread_detach(fan_thr);
+  pthread_t fps_thr = nullptr;
+  pthread_create(&fps_thr, nullptr, fps_sampler_thread, nullptr);
+  pthread_detach(fps_thr);
+  pthread_t vsync_fps_thr = nullptr;
+  pthread_create(&vsync_fps_thr, nullptr, vsync_fps_sampler_thread, nullptr);
+  pthread_detach(vsync_fps_thr);
+  pthread_t resume_thr = nullptr;
+  pthread_create(&resume_thr, nullptr, resume_recovery_thread, nullptr);
+  pthread_detach(resume_thr);
 }
 
 /** Keep IPC_loop alive: rejoin + restart on exit. */
@@ -177,7 +186,7 @@ int launchApp(const char *titleId) {
         LOG_ERROR("sceUserServiceGetForegroundUser failed: 0x%x", res);
         return res;
     }
-    LOG_INFO("[LA] user id %u", id);
+    LOG_DEBUG("[LA] user id %u", id);
 
     // the thread will clean this up
     Flag flag = Flag_None;
@@ -185,7 +194,7 @@ int launchApp(const char *titleId) {
 
     LOG_DEBUG("calling sceLncUtilLaunchApp");
     int err = sceLncUtilLaunchApp(titleId, nullptr, &param);
-    LOG_INFO("sceLncUtilLaunchApp returned 0x%x", (uint32_t)err);
+    LOG_DEBUG("sceLncUtilLaunchApp returned 0x%x", (uint32_t)err);
     if (err >= 0) {
         return err;
     }
@@ -208,12 +217,13 @@ int launchApp(const char *titleId) {
 
 void sig_handler(int signo) {
     if(!is_handler_enabled){
-        LOG_WARN("Signal handler is disabled, ignoring signal %d", signo);
+        onion_log_emergency("signal handler disabled, ignoring signal %d", signo);
         return;
     }
+    onion_log_emergency("signal %d received; main OnionHEN has crashed", signo);
+    onion_print_backtrace(onion_log_emergency);
     onion_notify(true, "notify.crash.main");
-    LOG_ERROR("main OnionHEN has crashed ...");
-    exit(1);
+    _exit(128 + signo);
 }
 
 bool is_800 = false;
@@ -223,6 +233,7 @@ int main() {
   (void)syscall(SYS_thr_set_name, -1, "onion_daemon.elf");
 
   onion_log_configure("OnionHEN", "/data/OnionHEN/OnionHEN.log");
+  onion_log_configure_crash("/data/OnionHEN/OnionHEN_crash.log");
   /* Real linked kernel export (not a dlsym function-pointer variable). */
   onion_notify_set_send(reinterpret_cast<onion_notify_send_fn>(
       sceKernelSendNotificationRequest));
@@ -247,8 +258,6 @@ int main() {
 
   install_crash_handlers();
 
-  unlink("/data/OnionHEN/OnionHEN_crash.log");
-
   payload_args_t* args = payload_get_args();
   kernel_base = args->kdata_base_addr;
 
@@ -272,10 +281,10 @@ int main() {
 
   (void)onion_net_get_ip_address(&buz[0], sizeof(buz));
   start_worker_threads(&fifo_thr, &msg_thr);
-  onion_ready_signal(ONION_READY_DAEMON);
+  onion_ready_signal_pid(ONION_READY_DAEMON, getpid());
 
-  LOG_INFO("is toolbox only: %s | ver: %x", toolbox_only ? "Yes" : "No",
-               sys_ver.version);
+  LOG_DEBUG("is toolbox only: %s | ver: %x", toolbox_only ? "Yes" : "No",
+            sys_ver.version);
 
   /* Toolbox injection is independent from the optional post-load navigation. */
   cmd_enable_toolbox();

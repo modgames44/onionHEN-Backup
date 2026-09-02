@@ -50,6 +50,7 @@ inline constexpr const char *kConfigPathShellui = "/user/data/OnionHEN/config.in
 
 // Semantic config schema. This schema starts at version 1.
 inline constexpr int kSettingsSchemaVersion = 1;
+inline constexpr int kFtpPortDefault = 1337;
 
 inline constexpr int kUiLanguageSystem = 0;
 inline constexpr int kUiLanguageZhHans = 1;
@@ -74,6 +75,10 @@ inline constexpr int kStartupOpenHomeMenu = 1;
 // so libonion_settings stays independent of libonion_platform; the processes
 // that bridge the two (see onion_apply_log_settings) static_assert that the
 // values still line up.
+inline constexpr int kCheatsMirrorAuto = 0;
+inline constexpr int kCheatsMirrorGithub = 1;
+inline constexpr int kCheatsMirrorCnb = 2;
+
 inline constexpr int kLogLevelOff = 0;
 inline constexpr int kLogLevelError = 1;
 inline constexpr int kLogLevelWarn = 2;
@@ -81,10 +86,13 @@ inline constexpr int kLogLevelInfo = 3;
 inline constexpr int kLogLevelDebug = 4;
 inline constexpr int kLogLevelTrace = 5;
 
+inline constexpr int kOverlayAlignLeft = 0;
+inline constexpr int kOverlayAlignCenter = 1;
+inline constexpr int kOverlayAlignRight = 2;
+
 inline constexpr int kFanThresholdMinCelsius = 0;
 inline constexpr int kFanThresholdMaxCelsius = 100;
 inline constexpr int kFanAutomaticThresholdCelsius = 77;
-
 inline constexpr int clamp_fan_threshold(int celsius) {
   if (celsius < kFanThresholdMinCelsius)
     return kFanThresholdMinCelsius;
@@ -111,11 +119,9 @@ struct Settings {
   // Page to open after OnionHEN finishes loading.
   int startup_open_after_load = kStartupOpenNone;
 
-  // [rest_mode]
-  uint64_t rest_mode_delay_seconds = 10;
-
   // [cheats], [app_jailbreak]
   bool libhijacker_cheats = false;
+  int cheats_mirror = kCheatsMirrorAuto;
   bool app_jailbreak_enabled = true;
   bool debug_app_jb_msg = false;
   AppJailbreakAllowlist app_jailbreak_allowlist{};
@@ -136,10 +142,13 @@ struct Settings {
   bool overlay_ram = true;
   bool overlay_cpu = true;
   bool overlay_gpu = true;
+  bool overlay_fps = true;
   bool overlay_ip = false;
   /** Per-core CPU usage mode on the overlay (id_all_cpu_usage). */
   bool all_cpu_usage = false;
   int overlay_pos = 0; // 0/1 top edge, 2/3 bottom edge
+  /** 0 left, 1 center, 2 right. Independent of overlay.edge. */
+  int overlay_align = kOverlayAlignCenter;
 
   // [shortcuts]
   int cheats_shortcut_opt = 0;
@@ -148,6 +157,12 @@ struct Settings {
   // [kstuff]
   // Load the embedded/override kstuff payload when OnionHEN starts.
   bool kstuff_autoload = true;
+
+  // [ftp]
+  // Start the built-in FTP server the next time OnionHEN launches.
+  bool ftp_autoload = false;
+  // TCP listen port for the built-in FTP server (1..65535).
+  int ftp_port = kFtpPortDefault;
 
   // [toolbox]
   // 0 = system (default), 1 = zh-Hans, 2 = en, 3 = ar, 4 = zh-Hant,

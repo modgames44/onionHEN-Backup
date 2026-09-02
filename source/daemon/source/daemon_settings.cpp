@@ -53,12 +53,12 @@ bool LoadSettings(bool force) {
 
   if (from_file) {
     LOG_INFO("[Daemon] Reading Settings from %s",
-                 onion::settings_last_loaded_path());
+             onion::settings_last_loaded_path());
   } else {
     LOG_INFO("[Daemon] Using default settings (no config file)");
   }
-  LOG_INFO("fan_threshold: %d", s.fan_threshold);
-  LOG_INFO("enable_fan_speed: %d", s.enable_fan_speed ? 1 : 0);
+  LOG_DEBUG("fan_threshold: %d", s.fan_threshold);
+  LOG_DEBUG("enable_fan_speed: %d", s.enable_fan_speed ? 1 : 0);
 
   /* Apply before the rest: a reload that raises the level should take effect
      for the messages that follow it in this same call. */

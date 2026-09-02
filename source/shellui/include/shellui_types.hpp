@@ -3,6 +3,7 @@
  */
 #pragma once
 #include "external_symbols.hpp"
+#include "overlay_layout.hpp"
 #include <string>
 #include <vector>
 #include <iostream>
@@ -40,6 +41,7 @@ enum RemoveWidget {
     REMOVE_CPU_OVERLAY,
     REMOVE_RAM_OVERLAY,
     REMOVE_IP_OVERLAY,
+    REMOVE_FPS_OVERLAY,
     REMOVE_ALL_OVERLAYS,
 };
 
@@ -48,6 +50,7 @@ enum CreateWidget {
     CREATE_CPU_OVERLAY,
     CREATE_RAM_OVERLAY,
     CREATE_IP_OVERLAY,
+    CREATE_FPS_OVERLAY,
     CREATE_ALL_OVERLAYS,
 };
 
@@ -60,7 +63,7 @@ struct WidgetConfig {
 };
 
 void RemoveGameWidget(RemoveWidget widget);
-void CreateGameWidget(CreateWidget widget);
+bool CreateGameWidget(CreateWidget widget);
 
 struct LaunchAppParam
 {
@@ -120,38 +123,21 @@ enum Cheats_Shortcut{
  };
 
  /**
-  * Anchor for the Game++-style single-row monitor bar.
-  * Content is always horizontally centered; pos only picks top vs bottom.
-  * Values 1/3 keep legacy TR/BR mapping → same as top/bottom center.
+  * Vertical edge for the Game++-style single-row monitor bar.
+  * Values 1/3 keep the legacy TR/BR mapping → same as top/bottom.
   */
  enum overlay_positions{
-    OVERLAY_POS_TOP_LEFT = 0,     /* top-center bar */
-    OVERLAY_POS_TOP_RIGHT,        /* top-center (legacy alias) */
-    OVERLAY_POS_BOTTOM_LEFT,      /* bottom-center bar */
-    OVERLAY_POS_BOTTOM_RIGHT      /* bottom-center (legacy alias) */
+    OVERLAY_POS_TOP_LEFT = 0,
+    OVERLAY_POS_TOP_RIGHT,
+    OVERLAY_POS_BOTTOM_LEFT,
+    OVERLAY_POS_BOTTOM_RIGHT
  };
 
 extern onion::Settings g_settings;
 
 /**
- * Overlay layout: full-width edge strip + centered metric segments.
+ * Overlay layout: full-width edge strip + left-, center-, or right-packed metrics.
  * bar_x/bar_w are always 0 / screen width; bar_y is 0 or (H - bar_h).
- * label_margin_top is relative to each metric cell and used with
- * PositionType=1; labels do not use X/Y.
  */
-struct OverlayLayout {
-    float bar_x = 0.0f;
-    float bar_y = 0.0f;
-    float bar_w = 1920.0f;
-    float bar_h = 24.0f;
-    float label_margin_top = 5.0f;
-    float overlay_cpu_x = 160.0f;
-    float overlay_cpu_y = 12.0f;
-    float overlay_gpu_x = 360.0f;
-    float overlay_gpu_y = 12.0f;
-    float overlay_ram_x = 560.0f;
-    float overlay_ram_y = 12.0f;
-    float overlay_ip_x = 740.0f;
-    float overlay_ip_y = 12.0f;
-};
+using OverlayLayout = onion::overlay::Layout;
 extern OverlayLayout g_overlay_layout;

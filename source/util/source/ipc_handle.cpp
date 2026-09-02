@@ -3,7 +3,9 @@
  * Transport (listen/accept/thread) stays in msg.cpp.
  */
 #include <onion/platform.h>
+#include <onion/payload.h>
 #include "ipc.hpp"
+#include "service_facade.hpp"
 #include <msg.hpp>
 #include <onion/settings.hpp>
 #include "common_utils.h"
@@ -17,8 +19,11 @@ extern "C" {
 #include <sys/ioctl.h>
 }
 #include "onion_cjson.hpp"
+#include <elfldr_remote.h>
 #include "cheats/cheat_service.hpp"
 #include "cheats/runtime.h"
+#include "cheats/sync/cheat_sync_service.hpp"
+#include <cstdio>
 #include <dirent.h>
 #include <fcntl.h>
 #include <sys/stat.h>
@@ -26,21 +31,52 @@ extern "C" {
 #include <memory>
 #include <sfo.hpp>
 #include <sstream>
-#include <atomic>
 #include <string>
 #include <vector>
 
-extern atomic_bool no_network_rest_mode_action, real_rest_mode_detected;
 extern bool is_handler_enabled;
 
 void reply(int sender_socket, bool error, std::string out_var = "Nothing");
 extern "C" {
-bool load_payload(const char *path);
 int launchApp(const char *titleId);
-extern char ip_address[];
 }
 std::string GetPS5Version(const std::string &jsonpath);
 std::vector<uint8_t> readFile(std::string filename);
+
+namespace {
+
+std::string make_state_json(const char *state, uint32_t task_id = 0) {
+  cJSON *root = cJSON_CreateObject();
+  if (!root || !cJSON_AddStringToObject(root, "state", state) ||
+      !cJSON_AddNumberToObject(root, "task_id", task_id)) {
+    cJSON_Delete(root);
+    return {};
+  }
+  return onion_cjson::print_owned(root);
+}
+
+std::string make_sync_status_json(
+    const onion::cheats::sync::CheatSyncStatus &status, const char *state) {
+  cJSON *root = cJSON_CreateObject();
+  const char *mirror = status.mirror == onion::cheats::sync::CheatMirrorId::Cnb
+                           ? "cnb"
+                           : "github";
+  if (!root || !cJSON_AddStringToObject(root, "state", state) ||
+      !cJSON_AddNumberToObject(root, "task_id", status.task_id) ||
+      !cJSON_AddStringToObject(root, "mirror", mirror) ||
+      !cJSON_AddStringToObject(root, "catalog", status.catalog_id.c_str()) ||
+      !cJSON_AddStringToObject(root, "error", status.error.c_str()) ||
+      !cJSON_AddStringToObject(root, "phase", status.phase.c_str()) ||
+      !cJSON_AddNumberToObject(root, "progress", status.progress_percent) ||
+      !cJSON_AddNumberToObject(root, "completed", status.completed) ||
+      !cJSON_AddNumberToObject(root, "total", status.total)) {
+    cJSON_Delete(root);
+    return {};
+  }
+  return onion_cjson::print_owned(root);
+}
+
+} // namespace
 
 void handleIPC(clientArgs *client, std::string &inputStr,
                DaemonCommands command) {
@@ -52,8 +88,7 @@ void handleIPC(clientArgs *client, std::string &inputStr,
   char temp[0x255];
   std::string out_var = "Nothing"; // default send var
 
-  LOG_INFO("Received IPC command 0x%X", command);
-  // LOG_INFO("Received IPC data: %s", inputStr.c_str());
+  LOG_DEBUG("Received IPC command 0x%X", command);
 
   onion_cjson::Root my_json(inputStr);
   if (!my_json) {
@@ -68,16 +103,35 @@ void handleIPC(clientArgs *client, std::string &inputStr,
     reply(sender_app, false, out_var);
     break;
   }
-  case BREW_UTIL_SHELLUI_ON_STANDBY: {
-    LOG_INFO("ShellUI on standby");
-    real_rest_mode_detected = no_network_rest_mode_action = true;
-    reply(sender_app, false);
+  case BREW_UTIL_TOGGLE_FTP: {
+    const cJSON *toggle = cJSON_GetObjectItemCaseSensitive(my_json.get(),
+                                                            "toggle");
+    const bool enabled = toggle && cJSON_IsNumber(toggle) && toggle->valueint;
+    bool ok = true;
+    const onion::Settings settings = g_settings.snapshot();
+    if (enabled)
+      ok = onion::services::ftpService().start(
+          static_cast<uint16_t>(settings.ftp_port));
+    else
+      onion::services::ftpService().stop();
+    reply(sender_app, !ok);
     break;
   }
-  case BREW_UTIL_UNUSED_FTP:
+  case BREW_UTIL_FTP_STATUS: {
+    reply(sender_app, false,
+          onion::services::ftpService().running() ? "1" : "0");
+    break;
+  }
+  case BREW_UTIL_RECOVER_FTP: {
+    reply(sender_app, !onion::services::ftpService().recover());
+    break;
+  }
+  case BREW_UTIL_UNUSED_LEGACY_SERVICE_SCAN:
+  case BREW_UTIL_UNUSED_LEGACY_SERVICE_TOGGLE:
   case BREW_UTIL_UNUSED_KLOG:
   case BREW_UTIL_UNUSED_DPI:
-    /* FTP (1337), Klog (9081), and DirectPKGInstaller removed; ordinals kept for IPC compat. */
+  case BREW_UTIL_UNUSED_SHELLUI_ON_STANDBY:
+    /* Removed scan-now / Klog / DPI / rest-standby IPC; ordinals stay stable. */
     LOG_WARN("Removed-service toggle: unsupported (cmd=%u)", static_cast<unsigned>(command));
     reply(sender_app, true);
     break;
@@ -100,14 +154,14 @@ void handleIPC(clientArgs *client, std::string &inputStr,
       // Attempt to load JSON files for PS5 games
       tmp = "/system_data/priv/appmeta/" + tid + "/param.json";
       if (!if_exists(tmp.c_str())) {
-        LOG_INFO("%s: json %s does not exist", tid.c_str(), tmp.c_str());
+        LOG_DEBUG("%s: json %s does not exist", tid.c_str(), tmp.c_str());
         tmp = "/system_data/priv/appmeta/external/" + tid + "/param.json";
 
         if (!if_exists(tmp.c_str())) {
-          LOG_INFO("%s: json %s does not exist", tid.c_str(), tmp.c_str());
+          LOG_DEBUG("%s: json %s does not exist", tid.c_str(), tmp.c_str());
           tmp = "/system_ex/app/" + tid + "/sce_sys/param.json";
           if (!if_exists(tmp.c_str())) {
-            LOG_INFO("%s: json %s does not exist", tid.c_str(), tmp.c_str());
+            LOG_DEBUG("%s: json %s does not exist", tid.c_str(), tmp.c_str());
             onion_notify(true, "notify.game.version_failed");
             reply(sender_app, true);
             break;
@@ -126,10 +180,10 @@ void handleIPC(clientArgs *client, std::string &inputStr,
       // Attempt to load SFO files for PS4 games
       tmp = "/system_data/priv/appmeta/" + tid + "/param.sfo";
       if (!if_exists(tmp.c_str())) {
-        LOG_INFO("%s: sfo %s does not exist", tid.c_str(), tmp.c_str());
+        LOG_DEBUG("%s: sfo %s does not exist", tid.c_str(), tmp.c_str());
         tmp = "/system_data/priv/appmeta/external/" + tid + "/param.sfo";
         if (!if_exists(tmp.c_str())) {
-          LOG_INFO("%s: sfo %s does not exist", tid.c_str(), tmp.c_str());
+          LOG_DEBUG("%s: sfo %s does not exist", tid.c_str(), tmp.c_str());
           onion_notify(true, "notify.game.version_failed");
           reply(sender_app, true);
           break;
@@ -160,7 +214,7 @@ void handleIPC(clientArgs *client, std::string &inputStr,
       }
     }
 
-    LOG_INFO("Version: %s", game_version.c_str());
+    LOG_DEBUG("Resolved %s version: %s", tid.c_str(), game_version.c_str());
     reply(sender_app, false, game_version);
 
     break;
@@ -215,12 +269,12 @@ void handleIPC(clientArgs *client, std::string &inputStr,
     int cheat_id = onion_cjson::int_item(my_json.get(), "cheat_id");
     std::string status;
 
-    LOG_INFO("Received toggle command for cheat %d on %s PID %d",
-                 cheat_id, title_id.c_str(), pid);
+    LOG_DEBUG("Received toggle command for cheat %d on %s PID %d", cheat_id,
+              title_id.c_str(), pid);
 
     auto &cheats = onion::cheats::CheatService::instance();
     if (cheats.toggle(pid, appid, title_id, version, cheat_id, status) == 0) {
-      LOG_INFO("Cheat toggle ok: %s", status.c_str());
+      LOG_DEBUG("Cheat toggle reply: %s", status.c_str());
       reply(sender_app, false, status);
     } else {
       LOG_ERROR("Cheat toggle failed: %s", status.c_str());
@@ -233,10 +287,63 @@ void handleIPC(clientArgs *client, std::string &inputStr,
     LOG_WARN("BREW_UTIL_LAUNCH_ELFLDR: unsupported (bootstrapper-managed)");
     reply(sender_app, true);
     break;
-  case BREW_UTIL_UNUSED_DOWNLOAD_CHEATS:
-    LOG_WARN("DOWNLOAD_CHEATS: unsupported (online download removed)");
-    reply(sender_app, true);
+  case BREW_UTIL_DOWNLOAD_CHEATS: {
+    const char *catalog = onion_cjson::string_item(my_json.get(), "catalog", "");
+    const char *mirror = onion_cjson::string_item(my_json.get(), "mirror", "");
+    using onion::cheats::sync::CheatSyncService;
+    uint32_t task_id = 0;
+    const auto started = CheatSyncService::instance().start(
+        g_settings.snapshot(),
+        (catalog && catalog[0]) ? catalog : nullptr,
+        (mirror && mirror[0]) ? mirror : nullptr, &task_id);
+    if (started == CheatSyncService::StartResult::AlreadyRunning) {
+      onion_notify(true, "notify.cheats.sync.busy");
+      const std::string body = make_state_json("already_running", task_id);
+      reply(sender_app, body.empty(), body);
+    } else if (started == CheatSyncService::StartResult::Rejected) {
+      const std::string body = make_state_json("rejected", task_id);
+      reply(sender_app, true, body);
+    } else {
+      const std::string body = make_state_json("started", task_id);
+      reply(sender_app, body.empty(), body);
+    }
     break;
+  }
+  case BREW_UTIL_CHEAT_SYNC_STATUS: {
+    const auto st = onion::cheats::sync::CheatSyncService::instance().status();
+    const char *state = "idle";
+    switch (st.state) {
+    case onion::cheats::sync::CheatSyncStatus::State::Running:
+      state = "running";
+      break;
+    case onion::cheats::sync::CheatSyncStatus::State::Ok:
+      state = "ok";
+      break;
+    case onion::cheats::sync::CheatSyncStatus::State::Error:
+      state = "error";
+      break;
+    case onion::cheats::sync::CheatSyncStatus::State::Idle:
+    default:
+      state = "idle";
+      break;
+    }
+    const std::string body = make_sync_status_json(st, state);
+    reply(sender_app, body.empty(), body);
+    break;
+  }
+  case BREW_UTIL_CANCEL_CHEAT_SYNC: {
+    const int requested_task_id =
+        onion_cjson::int_item(my_json.get(), "task_id", 0);
+    const bool requested =
+        requested_task_id > 0 &&
+        onion::cheats::sync::CheatSyncService::instance().cancel(
+            static_cast<uint32_t>(requested_task_id));
+    const std::string body = make_state_json(
+        requested ? "cancel_requested" : "cancel_ignored",
+        requested_task_id > 0 ? static_cast<uint32_t>(requested_task_id) : 0);
+    reply(sender_app, body.empty(), body);
+    break;
+  }
   case BREW_UTIL_UNUSED_DOWNLOAD_KSTUFF:
     LOG_WARN("DOWNLOAD_KSTUFF: unsupported (online download removed)");
     reply(sender_app, true);

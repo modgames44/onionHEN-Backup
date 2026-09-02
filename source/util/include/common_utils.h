@@ -47,9 +47,6 @@ along with this program; see the file COPYING. If not, see
 #include <sys/types.h>
 #include <ifaddrs.h>
 
-/* Rest-mode loop sleep (was in tcp.h with the removed klog/ftp helpers) */
-#define SLEEP_PERIOD 1000000
-
 /*================== Networking =================*/
 /* SceNetCtlInfo / sceNetCtlGetInfo: shared ABI header. */
 #include <ps5/net_ctl.h>
@@ -111,8 +108,7 @@ int32_t sceKernelSendNotificationRequest(int32_t device, OrbisNotificationReques
 extern "C" {
 #endif
 /**
- * Read the console IP, additionally latching util's `not_connected` flag when
- * the net stack reports disconnected/unavailable.
+ * Read the console IP.
  *
  * @param size must be >= ONION_NET_IP_ADDRESS_SIZE
  * @return 0 on success, -1 otherwise (the buffer still receives a value)

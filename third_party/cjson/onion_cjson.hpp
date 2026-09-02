@@ -2,6 +2,7 @@
 
 #include "cJSON.hpp"
 
+#include <cctype>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -10,10 +11,28 @@
 
 namespace onion_cjson {
 
+inline cJSON *parse_exact(const char *text, size_t length) {
+  const char *end = nullptr;
+  cJSON *node =
+      text ? cJSON_ParseWithLengthOpts(text, length, &end, false) : nullptr;
+  while (node && end < text + length &&
+         std::isspace(static_cast<unsigned char>(*end))) {
+    ++end;
+  }
+  if (node && end != text + length) {
+    cJSON_Delete(node);
+    return nullptr;
+  }
+  return node;
+}
+
 class Root {
 public:
-  explicit Root(const char *text) : node_(text ? cJSON_Parse(text) : nullptr) {}
-  explicit Root(const std::string &text) : Root(text.c_str()) {}
+  explicit Root(const char *text)
+      : node_(text ? parse_exact(text, std::strlen(text)) : nullptr) {}
+  explicit Root(const std::string &text) : Root(text.data(), text.size()) {}
+  Root(const char *text, size_t length)
+      : node_(parse_exact(text, length)) {}
   ~Root() {
     if (node_) {
       cJSON_Delete(node_);
@@ -32,8 +51,10 @@ private:
 
 class Printed {
 public:
-  explicit Printed(cJSON *node)
-      : text_(node ? cJSON_PrintUnformatted(node) : nullptr) {}
+  explicit Printed(const cJSON *node, bool formatted = false)
+      : text_(node ? (formatted ? cJSON_Print(node)
+                                : cJSON_PrintUnformatted(node))
+                   : nullptr) {}
   ~Printed() {
     if (text_) {
       cJSON_free(text_);
@@ -50,6 +71,14 @@ public:
 private:
   char *text_;
 };
+
+/** Serialize and release a cJSON tree owned by the caller. */
+inline std::string print_owned(cJSON *node, bool formatted = false) {
+  Printed printed(node, formatted);
+  std::string out = printed.str();
+  cJSON_Delete(node);
+  return out;
+}
 
 inline cJSON *item(const cJSON *object, const char *key) {
   return cJSON_GetObjectItemCaseSensitive(object, key);

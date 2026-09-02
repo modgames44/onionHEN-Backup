@@ -42,7 +42,6 @@ int elfldr_set_procname(pid_t pid, const char* name);
 
 int sceKernelGetProcessName(int pid, char *name);
 int sceKernelGetAppInfo(int pid, app_info_t *title);
-atomic_bool not_connected = false;
 
 /* OnionHEN: user payloads launch exclusively via private elfldr :9020.
  * ptrace attach/mmap: libonion_elfldr (pt_attach / pt_mmap). Authid is raised
@@ -50,22 +49,12 @@ atomic_bool not_connected = false;
  */
 
 /*
- * Thin wrapper over the shared helper: `not_connected` drives util's rest-mode
- * recovery, so it stays util-local rather than moving into libonion_platform.
- *
- * The previous local implementation stored sceNetCtlGetInfo's result in an
- * `unsigned int` and tested `ret < 0`, which is never true — the error branch
- * was unreachable, so this never reported failure, never set not_connected,
- * and copied an uninitialised SceNetCtlInfo to the caller on failure.
+ * Thin wrapper over the shared helper; returns 0 when the console has a
+ * usable IPv4 address, -1 otherwise.
  */
 int get_ip_address(char *ip_address, size_t size)
 {
 	const onion_net_ip_status status = onion_net_get_ip_address(ip_address, size);
-
-	if (status == ONION_NET_IP_DISCONNECTED || status == ONION_NET_IP_UNAVAILABLE) {
-		not_connected = true;
-	}
-
 	return status == ONION_NET_IP_OK ? 0 : -1;
 }
 
@@ -124,7 +113,7 @@ int launchApp(const char *titleId)
 		LOG_ERROR("sceUserServiceGetForegroundUser failed: 0x%x", res);
 		return res;
 	}
-	LOG_INFO("[LA] user id %u", id);
+	LOG_DEBUG("[LA] user id %u", id);
 
     LncAppParam param;
 	param.sz = sizeof(LncAppParam);
@@ -136,7 +125,7 @@ int launchApp(const char *titleId)
 
 	LOG_DEBUG("calling sceLncUtilLaunchApp");
 	int err = sceLncUtilLaunchApp(titleId, NULL, &param);
-	LOG_INFO("sceLncUtilLaunchApp returned 0x%x", (uint32_t)err);
+	LOG_DEBUG("sceLncUtilLaunchApp returned 0x%x", (uint32_t)err);
 	if (err >= 0)
 	{
 		return err;

@@ -48,6 +48,10 @@ bool set_fan_threshold(int temp);
 bool restore_automatic_fan();
 /** Periodic /dev/icc_fan rewrite while manual threshold is enabled. */
 void *fan_maintenance_thread(void *args) noexcept;
+/** Render/skip-hook FPS sampler: DMAP counters, publishes the FPS sample. */
+void *fps_sampler_thread(void *args) noexcept;
+/** V-sync FPS sampler: feeds the FPS sampler when render counters are invalid. */
+void *vsync_fps_sampler_thread(void *args) noexcept;
 
 /**
  * Tear down OnionHEN userland (does not return). Caller should reply to IPC first.
@@ -59,17 +63,28 @@ void *fan_maintenance_thread(void *args) noexcept;
 [[noreturn]] void cmd_shutdown_onion_stack(void);
 
 bool cmd_enable_toolbox();
+/** Schedule injection for an identified SceShellUI EXEC without blocking kevent. */
+void toolbox_on_new_shellui(pid_t pid);
+/** Reconcile the current ShellUI after the WORKING power-state transition. */
+void toolbox_on_resume();
 
 void *IPC_loop(void *args);
 /** LAN TCP :9048 — PC can trigger BREW_SHUTDOWN_STACK without Unix socket. */
 void *control_tcp_loop(void *args);
+/** Re-bind the TCP :9048 listener after resume or accept failure. */
+void control_tcp_restart();
+/** True while the :9048 accept loop holds a live listen fd. */
+bool control_tcp_is_listening();
+/** Re-bind the crit Unix IPC listener after resume or accept failure. */
+void restart_crit_ipc_server();
+/** True while the crit Unix IPC accept loop holds a live listen fd. */
+bool crit_ipc_is_listening();
 void handleIPC(clientArgs *client, std::string &inputStr, DaemonCommands command);
 
 /* ---- shared helpers (daemon_utils.cpp) ---- */
 bool GetFileContents(const char *path, char **buffer);
 /* Console IP: onion_net_get_ip_address() from <onion/net.h>. */
 bool Get_Running_App_TID(std::string &title_id, int &BigAppid);
-bool isUserLoggedIn();
 bool Open_Utility_Elf(const char *path, uint8_t **buffer);
 
 /* ---- background threads ---- */
@@ -77,3 +92,8 @@ bool Open_Utility_Elf(const char *path, uint8_t **buffer);
 void app_jailbreak_set_enabled(bool enabled);
 void *fifo_and_dumper_thread(void *args) noexcept; // daemon_jailbreak.cpp
 void *runtime_supervisor_thread(void *args) noexcept;
+/** PID owned by the current util readiness marker, or -1. */
+pid_t runtime_owned_util_pid();
+/** PID owned by the private-loader state marker, or -1. */
+pid_t runtime_owned_private_loader_pid();
+void *resume_recovery_thread(void *args) noexcept;

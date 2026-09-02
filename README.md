@@ -64,10 +64,12 @@ OnionHEN is a practical homebrew stack for jailbroken PS5 consoles.
 - **ShellUI Toolbox** — a settings page injected into the PS5 ShellUI
 - **System preparation** — raise privileges, remount filesystems, and block the update partition
 - **fSELF / fPKG** — bundled kstuff for homebrew SELF / PKG; loads by default, can be turned off in the Toolbox
-- **Payload manager** — start and stop plain `.elf` payloads, with optional auto-start
+- **PS5 FTP server** — built-in source module with configurable port
+- **Remote Play pairing** — enable the native PS5 Remote Play service, generate a pairing PIN, and register a client from the Network section
+- **User payload manager** — start and stop user-provided `.elf` payloads, with optional auto-start
 - **Game overlay** — an in-game bar for FPS, CPU, GPU, RAM, temperatures, and network info
 - **Cheat engine** — local JSON, SHN, MC4, and ShnExt files that can be toggled at runtime
-- **Console tools** — Rest Mode, account activation, external HDD, Title IDs, fan control, shortcuts, and game options
+- **Console tools** — account activation, external HDD, Title IDs, fan control, shortcuts, and game options
 - **App jailbreak** — allowlisted homebrew can ask the daemon for extra privileges through a sandbox FIFO
 - **Resilient runtime** — the critical daemon and utility daemon run apart; the main daemon can restart the utility
 - **Shared configuration** — the Toolbox and daemons use one versioned `config.ini`
@@ -99,6 +101,31 @@ Startup is sequential. After the first hop, OnionHEN uses its own
 OnionHEN.elf → bootstrapper → onion_elfldr.elf (:9020) → util.elf → kstuff.elf → daemon.elf → Toolbox
 ```
 
+If `ftp.autoload` is enabled, the built-in FTP module starts after `kstuff` and
+before the daemon.
+
+### FTP server
+
+The PS5 FTP server is available from **Toolbox → Plugins → FTP server**. One
+switch starts or stops it in the current session. A separate switch starts it
+the next time OnionHEN launches. The plugin page accepts ports from `1` to
+`65535` and applies a new port by restarting the in-process listener. It
+includes the upstream `ftpsrv` commands such as `KILL`, `SELF`, `SCHK`, `MTRW`,
+and `AUTHID` where supported.
+
+### Remote Play
+
+Remote Play pairing is available from **Toolbox → Network → Remote Play**.
+The current account must already be activated. If it is not, OnionHEN blocks
+the Remote Play page and directs you to **Toolbox → Account → Account
+activation**. Once the account is activated, OnionHEN enables the Remote Play
+registry setting and displays the pairing PIN. Enter that PIN in the official
+Remote Play client while the page is open; OnionHEN uses the native PS5 Remote
+Play service to confirm the registered device.
+
+The feature provides pairing and registration only. Video streaming and client
+transport remain handled by Sony's native Remote Play service.
+
 ### Payloads
 
 Place standalone payloads in:
@@ -110,18 +137,33 @@ Place standalone payloads in:
 Only plain `.elf` files are supported. Auto-start can be turned on in the Toolbox;
 OnionHEN remembers that choice with a matching `.auto_start` file next to the ELF.
 
+All `.elf` filenames use the same Payload page, loader, and auto-start flow,
+including `kstuff`, `ftpsrv`, and `ftpsrv-ps5`. A recorded running instance is
+left running by later launch and auto-start requests. Built-in services manage
+only their own runtime; they do not stop same-name user Payloads. If two FTP
+services use the same TCP port, only one can bind it.
+
 ### Cheats
 
-Put cheat files in one directory, named with the Title ID and game version:
+Put cheat files in one directory. Names are `TITLEID_VERSION`, with an
+optional process and 8-hex source ID:
 
 ```text
-/data/OnionHEN/cheats/<TITLE_ID>_<VERSION>.json
-/data/OnionHEN/cheats/<TITLE_ID>_<VERSION>.shn
-/data/OnionHEN/cheats/<TITLE_ID>_<VERSION>.mc4
-/data/OnionHEN/cheats/<TITLE_ID>_<VERSION>.ShnExt
+/data/OnionHEN/cheats/<TITLE_ID>_<VERSION>[_<PROCESS>][_<SOURCE_ID>].json
+/data/OnionHEN/cheats/<TITLE_ID>_<VERSION>[_<PROCESS>][_<SOURCE_ID>].shn
+/data/OnionHEN/cheats/<TITLE_ID>_<VERSION>[_<PROCESS>][_<SOURCE_ID>].mc4
+/data/OnionHEN/cheats/<TITLE_ID>_<VERSION>[_<PROCESS>][_<SOURCE_ID>].ShnExt
 ```
 
+`PROCESS` is optional. `SOURCE_ID` is a stable physical-source discriminator.
+OnionHEN loads every compatible source for the title/version/process, so
+independent JSON, SHN, MC4 and ShnExt files can coexist. A source with an
+explicit process is only used for that process; a source without one is
+generic.
+
 Cheats load from disk. If a file changes, OnionHEN reloads it without restarting the whole stack.
+
+`DOWNLOAD_CHEATS` downloads a cheat catalog ZIP over HTTPS (GitHub or cnb.cool), extracts the `cheats/` tree, and copies `json/`, `shn/`, and `mc4/` files into this directory with their original names. `[cheats] mirror=auto` uses cnb.cool when the UI/system language is Simplified Chinese, otherwise GitHub.
 
 <br>
 
@@ -137,6 +179,9 @@ Cheats load from disk. If a file changes, OnionHEN reloads it without restarting
 | `lzma` or `xz` | Compress the bootstrapper |
 | Git and `curl` or `wget` | Initialize submodules and fetch external payload inputs |
 
+The pinned [`drakmor/ftpsrv`](https://github.com/drakmor/ftpsrv) `nexgen`
+sources are compiled into `util.elf` as its FTP module.
+
 ### Full build
 
 ```shell
@@ -148,6 +193,13 @@ export PS5_PAYLOAD_SDK=/path/to/ps5-payload-sdk
 
 The script configures the project, fetches external dependencies, and builds
 the embed chain in the required order.
+
+For the reproducible Docker build:
+
+```shell
+docker compose build onionhen-build
+docker compose run --rm onionhen-build
+```
 
 ### Common options
 
@@ -212,21 +264,22 @@ default from [`config.ini.example`](config.ini.example).
 | `startup.open_after_load` | `none` | `none`, `home_menu` |
 | `home_screen.show_title_ids` | `false` | `true`, `false` |
 | `game_menu.show_onionhen_options` | `true` | `true`, `false` |
-| `rest_mode.resume_reinject_delay_seconds` | `0` | seconds |
-| `rest_mode.stop_utility_daemon_on_entry` | `false` | `true`, `false` |
-| `rest_mode.close_running_game_on_entry` | `false` | `true`, `false` |
 | `cheats.memory_backend` | `default` | `default`, `libhijacker` |
+| `cheats.mirror` | `auto` | `auto`, `github`, `cnb` |
 | `app_jailbreak.debug_notifications` | `false` | `true`, `false` |
 | `cooling.fan_control` | `automatic` | `automatic`, `temperature_threshold` |
 | `cooling.temperature_threshold_celsius` | `77` | `0` through `100` |
 | `overlay.enabled` | `true` | `true`, `false` |
 | `overlay.background` | `true` | `true`, `false` |
 | `overlay.edge` | `top` | `top`, `bottom` |
-| `overlay.show_cpu` / `overlay.show_gpu` / `overlay.show_memory` | `true` | `true`, `false` |
+| `overlay.align` | `center` | `left`, `center`, `right` |
+| `overlay.show_cpu` / `overlay.show_gpu` / `overlay.show_memory` / `overlay.show_fps` | `true` | `true`, `false` |
 | `overlay.cpu_usage_mode` | `average` | `average`, `per_core` |
 | `overlay.show_ip_address` | `false` | `true`, `false` |
 | `shortcuts.cheats_menu` | `off` | `off`, `r3_l3`, `l2_triangle`, `long_options`, `long_share`, `share` |
 | `shortcuts.toolbox` | `off` | `off`, `l2_r3`, `long_share`, `share` |
+| `ftp.autoload` | `false` | `true`, `false` |
+| `ftp.port` | `1337` | `1` through `65535` |
 
 ### Runtime data
 
@@ -234,8 +287,11 @@ default from [`config.ini.example`](config.ini.example).
 | --- | --- |
 | `/data/OnionHEN/payloads/` | User payload ELFs |
 | `/data/OnionHEN/cheats/` | Cheat files |
-| `/data/OnionHEN/kstuff.elf` | Optional replacement for the embedded `kstuff` |
+| `/data/OnionHEN/cheats_tmp/` | Temporary HTTPS ZIP and extraction files, cleaned after sync |
+| `/data/OnionHEN/kstuff.elf` | Optional runtime override with priority over the embedded `kstuff` |
+| `ftpsrv` | In-process FTP source module; default port `1337` |
 | `/data/OnionHEN/OnionHEN.log` | Main runtime log |
+| `/data/OnionHEN/OnionHEN_crash.log` | Preserved daemon signal and backtrace log |
 | `/data/OnionHEN/OnionHEN_util_daemon.log` | Utility daemon log |
 
 <br>
@@ -297,6 +353,14 @@ See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 <a href="https://ko-fi.com/0xp0co"><img src="https://img.shields.io/badge/Ko--fi-Support-FF6433?style=for-the-badge&logo=kofi&logoColor=white" alt="Support OnionHEN on Ko-fi"/></a>
 
+For Chinese users, you can also scan the QR codes below to donate:
+
+国内用户也可以扫描下方二维码进行捐赠：
+
+| Alipay (CN) | WeChat (CN) |
+| --- | --- |
+| <img src="assets/donation_alipay_cn.JPG" width="200" alt="Alipay"/> | <img src="assets/donation_wechat_cn.JPG" width="200" alt="WeChat"/> |
+
 If OnionHEN is useful to you, consider supporting further development. Thank you.
 
 <br>
@@ -305,16 +369,32 @@ If OnionHEN is useful to you, consider supporting further development. Thank you
 
 OnionHEN exists because of the PS5 homebrew and reverse-engineering community.
 
+### Contributors
+
+<p align="center">
+  <a href="https://github.com/aydencharles/onionHEN/graphs/contributors">
+    <img src="https://contrib.rocks/image?repo=aydencharles/onionHEN" alt="OnionHEN contributors"/>
+  </a>
+</p>
+
 ### Based on
 
 - [etaHEN](https://github.com/LightningMods/etaHEN) — LightningMods and contributors; source base of this tree
 - [GoldHEN](https://github.com/GoldHEN/GoldHEN) — SiSTR0 and contributors; the PS4 all-in-one HEN this project takes after
+
+### Referenced
+
+- [kstuff-lite](https://github.com/EchoStretch/kstuff-lite) — EchoStretch, sleirsgoevy, and contributors; Rest Mode Toolbox recovery follows its SceSysCore `NOTE_EXEC` watch for `NPXS40087` and wait for `libSceNpTrophy.sprx` / `libSceNpTrophy2.sprx`
+- [ps5-payload-manager](https://github.com/itsplk/ps5-payload-manager) — itsplk; listen-socket rebind after Rest Mode (Unix IPC and TCP accept-fail self-heal) follows this project
+- [HEN-Cheats-Collection](https://github.com/TeeKay87/HEN-Cheats-Collection) — TeeKay87; the community cheat collection downloaded by the built-in cheat sync
+- [PHU Games Tools](https://github.com/ArkSama) — ArkSama; the in-game FPS counter follows PHU Games Tools skip-hook sampling (`/dev/dce` scanout and DMAP reads of `libSceAgcDriver`)
 
 ### Used or embedded
 
 - [PS5 Payload SDK](https://github.com/ps5-payload-dev/sdk) — Prospero toolchain and headers
 - [elfldr](https://github.com/ps5-payload-dev/elfldr) — first-hop loader on port 9021; not shipped in the payload
 - [kstuff-lite](https://github.com/EchoStretch/kstuff-lite) — EchoStretch, sleirsgoevy, and contributors; optional `kstuff.elf`
+- [ftpsrv](https://github.com/drakmor/ftpsrv) — drakmor and upstream contributors; in-process PS5 FTP server from `nexgen`
 - [libhijacker](https://github.com/astrelsky/libhijacker) — astrelsky; process hijack and kernel R/W
 - [NineS](https://github.com/buzzer-re/NineS) — buzzer-re; ShellUI injection
 - [cJSON](https://github.com/DaveGamble/cJSON) — JSON parsing

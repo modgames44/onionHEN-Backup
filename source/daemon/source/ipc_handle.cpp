@@ -40,7 +40,7 @@ void handleIPC(clientArgs *client, std::string &inputStr,
 
   std::string out_var = "Nothing"; // default send var
 
-  LOG_INFO("Received IPC command 0x%X", command);
+  LOG_DEBUG("Received IPC command 0x%X", command);
 
   onion_cjson::Root my_json(inputStr);
   if (!my_json) {
@@ -56,9 +56,12 @@ void handleIPC(clientArgs *client, std::string &inputStr,
     break;
   }
   case BREW_ENABLE_TOOLBOX: {
+    LOG_DEBUG("rest: IPC BREW_ENABLE_TOOLBOX");
     if(cmd_enable_toolbox()){
+        LOG_DEBUG("rest: BREW_ENABLE_TOOLBOX ok");
         reply(sender_app, false);
     } else {
+        LOG_DEBUG("rest: BREW_ENABLE_TOOLBOX failed");
         reply(sender_app, true);
     }
     break;
@@ -87,7 +90,7 @@ void handleIPC(clientArgs *client, std::string &inputStr,
     path_buf = std::string(onion_cjson::string_item(my_json.get(), "mount_dest", ""));
     path_buf2 = std::string(onion_cjson::string_item(my_json.get(), "mount_src", ""));
     json_path = path_buf + "/sce_sys/param.json";
-    LOG_INFO("change dir selected, %s", path_buf2.c_str());
+    LOG_DEBUG("remount source selected: %s", path_buf2.c_str());
 
     if(path_buf.rfind("/user") == std::string::npos && path_buf.length() <= strlen("/system_ex/app/")) {
       onion_notify(true, "notify.ipc.invalid_path", path_buf.length());
@@ -98,11 +101,11 @@ void handleIPC(clientArgs *client, std::string &inputStr,
     mkdir(path_buf.c_str(), 0777);
 
     if (if_exists(json_path.c_str())) {
-      LOG_INFO("param.json exists, trying to unmount");
+      LOG_DEBUG("param.json exists, trying to unmount");
       int retries = 0;
       do {
         if (retries == 0)
-          LOG_INFO("unmounting .....");
+          LOG_DEBUG("unmounting before remount");
         else
           LOG_ERROR("retrying attempt unmounting %d | prev. error %s", retries, strerror(errno));
 
@@ -121,7 +124,7 @@ void handleIPC(clientArgs *client, std::string &inputStr,
       if (errno == EBADF || errno == EPERM ||
           errno == EIO) { // if anyone repots a game not mounting til the 2nd
                           // time look at this
-        LOG_INFO("trying to unmount");
+        LOG_DEBUG("remount failed, trying to unmount first");
         unmount(path_buf.c_str(), MNT_FORCE);
       }
       if (!remount(path_buf2.c_str(), path_buf.c_str(), MNT_UPDATE)) {
@@ -145,7 +148,7 @@ void handleIPC(clientArgs *client, std::string &inputStr,
     }
     if (stat(path, &buffer) == 0) {
       snprintf(size_buf, sizeof(size_buf), "%ld", buffer.st_size);
-      LOG_INFO("%s exists | size %s", path, size_buf);
+      LOG_DEBUG("%s exists | size %s", path, size_buf);
       reply(sender_app, false, size_buf);
     } else {
       LOG_ERROR("error for %s | %s", path, strerror(errno));
@@ -163,7 +166,7 @@ void handleIPC(clientArgs *client, std::string &inputStr,
     uint64_t size = calculateTotalSize(path);
     snprintf(size_buf, sizeof(size_buf), "%lu",
              static_cast<unsigned long>(size));
-    LOG_INFO("size %s", size_buf);
+    LOG_DEBUG("calculated directory size %s", size_buf);
     reply(sender_app, false, size_buf);
     break;
   }
@@ -239,7 +242,7 @@ void handleIPC(clientArgs *client, std::string &inputStr,
   case BREW_ADJUST_FAN_SPEED: {
     int speed = onion_cjson::int_item(my_json.get(), "speed");
     int enabled = onion_cjson::int_item(my_json.get(), "enabled");
-    LOG_INFO("Adjusting Fan Speed to: %d", speed);
+    LOG_DEBUG("Adjusting Fan Speed to: %d", speed);
     if (speed < onion::kFanThresholdMinCelsius ||
         speed > onion::kFanThresholdMaxCelsius) {
       onion_notify(true, "notify.fan.invalid_speed", speed);
@@ -316,7 +319,7 @@ void handleIPC(clientArgs *client, std::string &inputStr,
     break;
   }
   case BREW_CHMOD_DIR: {
-	LOG_INFO("BREW_CHMOD_DIR called");
+	LOG_DEBUG("BREW_CHMOD_DIR called");
     path = onion_cjson::string_item(my_json.get(), "path");
     if(!path) {
       LOG_ERROR("Invalid path for chmod");

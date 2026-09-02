@@ -55,7 +55,7 @@ target_compile_definitions(${PROJECT_NAME} PRIVATE
 	ONIONHEN_BOOTSTRAPPER_LZMA="${ONIONHEN_OUT_BIN}/bootstrapper.elf.lzma"
 	ONIONHEN_BOOTSTRAPPER_SIZE="${ONIONHEN_OUT_BIN}/bootstrapper.elf.lzma.size"
 )
-add_dependencies(${PROJECT_NAME} bootstrapper)
+add_dependencies(${PROJECT_NAME} bootstrapper_packed)
 
 # Add post-build command
 onion_strip_debug(${PROJECT_NAME})

@@ -1,6 +1,6 @@
-# OnionHEN 架构分析
+# OnionHEN 架构
 
-OnionHEN 是 PS5 的 All-in-One Homebrew Enabler，基于 **etaHEN**（LightningMods）GPLv3 源码的社区续作，定位类似 PS4 上的 GoldHEN。
+OnionHEN 是 PS5 的 All-in-One Homebrew Enabler，提供提权、后台服务、Toolbox UI 和 fPKG/fSELF 支持。
 
 | 维度 | 说明 |
 |------|------|
@@ -45,13 +45,14 @@ OnionHEN 是 PS5 的 All-in-One Homebrew Enabler，基于 **etaHEN**（Lightning
         │               │                 │
         │               └─────────────────┼── 共用 ptrace / ShellUI
         ▼                                 ▼
-  Unix IPC                       fps_elf（游戏 overlay）
+  Unix IPC                       ShellUI monitor bar
 ```
 
-**启动顺序有意串行化：** util → kstuff → daemon。
+**启动顺序串行：** util → kstuff → daemon。
 
 - util 先提供网络/IPC 等服务
 - kstuff 需先完成 ShellUI 补丁
+- `ftp.autoload` 为 true 时，util 在进程内创建 FTP 工作线程
 - daemon 再注入 Toolbox
 
 若并行 ptrace 同一进程，容易导致 Toolbox 超时或崩溃。
@@ -60,8 +61,7 @@ OnionHEN 是 PS5 的 All-in-One Homebrew Enabler，基于 **etaHEN**（Lightning
 
 ```
 shellui.elf ───────┐
-fps_elf.elf ───────┼──► 嵌入 daemon.elf ──┐
-util.elf ──────────┤                       │
+util.elf ──────────┼──► 嵌入 daemon.elf ──┐
 onion_elfldr.elf ──┘                       │
                      util.elf ─────────────┼──► 嵌入 bootstrapper.elf
                      kstuff.elf ───────────┤         │
@@ -75,14 +75,14 @@ onion_elfldr.elf ──┘                       │
 构建阶段（`scripts/build.sh`）：
 
 1. CMake configure
-2. 内部库 + `shellui` + `fps_elf`
+2. 内部库 + `shellui`
 3. sync vendor（kstuff）
 4. `daemon` + `util`
 5. `bootstrapper`（再 lzma 压缩）
 6. `unpacker` → `OnionHEN.elf`
 
-> **Payload only:** OnionHEN no longer supports `.plugin` packages. Place
-> bare `.elf` under `/data/OnionHEN/payloads/` (or USB `.../payloads/`).
+> 用户 Payload 使用裸 `.elf` 文件，存放在 `/data/OnionHEN/payloads/`
+> 或 USB 的 `.../payloads/` 目录。
 
 产物落在仓库根目录 `build/bin/`（静态库 `build/lib/`；CMake 树 `build/`）。
 
@@ -98,7 +98,6 @@ OnionHEN/
 │   ├── daemon/       # 核心守护
 │   ├── util/         # 工具守护（金手指、IPC 等）
 │   ├── shellui/      # Toolbox
-│   ├── fps_elf/      # 游戏 overlay
 │   ├── unpacker/     # 最终 OnionHEN.elf
 │   ├── libhijacker/ libNineS/ libNidResolver/
 │   ├── libonion_*    # 共享：ipc/settings/proc/platform/ready/detour/payload/elfldr
@@ -135,18 +134,20 @@ OnionHEN/
 2. 启动内置 `onion_elfldr.elf`，并通过握手确认 `127.0.0.1:9020`
 3. 顺序发送内部 ELF 字节：util → kstuff → daemon；9020 是正常路径，9021 仅承担引导/恢复职责
 4. 各子 ELF 启动后把主线程名设为稳定进程名（`onion_util.elf` / `kstuff.elf` / `onion_daemon.elf`）
-5. 仅在 9020 健康时加载 `/data/OnionHEN/payloads/` 下带 `.auto_start` 的 `.elf`；必须取得精确 PID，否则该 Payload 直接失败
+5. 仅在 9020 健康时加载 `/data/OnionHEN/payloads/` 下带 `.auto_start` 的 `.elf`；已有有效 PID 记录时保持现有实例，否则必须取得精确 PID
 
 可用 Toolbox「启动时自动加载 Kstuff」（默认开启）关闭，或放 `/mnt/usb0/no_kstuff` 跳过 kstuff。
 
 ### 2.3 `daemon` → `daemon.elf`（Critical 守护进程）
 
-- 内嵌 `shellui.elf`、`fps_elf.elf`、`util.elf` 与 `onion_elfldr.elf`
+- 内嵌 `shellui.elf`、`util.elf` 与 `onion_elfldr.elf`
 - 经 **libNineS** 将 Toolbox 注入 `SceShellUI`
 - 按依赖顺序监视私有 9020 与 util：9020 异常时先通过外部 9021 恢复加载器，再通过 9020 恢复 util
 - 9020 在同步加载 Payload 时发布 busy 标记，避免健康检查误杀；超过有界宽限期仍未恢复则按卡死处理
 - Unix socket：`/system_tmp/onionhen/ipc/crit_service`
 - IPC 前缀 `0x9000000`（`BREW_*`）
+- 休息后 Toolbox 恢复：SceSysCore `NOTE_EXEC` 认出新 `NPXS40087`，等 `libSceNpTrophy.sprx` 与 `libSceNpTrophy2.sprx` 再注入（参考 [kstuff-lite](https://github.com/EchoStretch/kstuff-lite)）
+- Unix IPC 与 TCP **9048** 在 `accept` 失败时关闭并重新 listen（参考 [ps5-payload-manager](https://github.com/itsplk/ps5-payload-manager)）
 
 主要能力：
 
@@ -163,37 +164,44 @@ OnionHEN/
 
 | 服务 | 端口 / 入口 | 说明 |
 |------|-------------|------|
-| Cheats | IPC | flat-file cheat engine（flat `TITLE_VERSION.ext` + mdbg/kdirect）；详见 [util_arch](util_arch/) |
-| ShellCore / ShellUI 补丁 | — | 休息模式恢复、toolbox 激活等 |
+| Cheats | IPC | flat-file cheat engine（multi-source `TITLE_VERSION[_PROCESS][_SOURCE_ID].ext` + mdbg/kdirect）；详见 [util_arch](util_arch/) |
+| Toolbox 请求 | IPC | util 崩溃重拉后向 crit 请求 `BREW_ENABLE_TOOLBOX`；休息恢复在 daemon |
+| FTP | TCP `ftp.port`（默认 1337） | util 内部 `ftpsrv` 源码模块；插件页提供启停、自启和端口修改；待机恢复时由 util 重绑已启用监听 |
 
-> **已移除：** FTP（1337）、Klog 网络服务（9081）、Legacy CMD（9028）。  
-> 注意：代码里仍使用 `ps5/klog.h` 的 `klog_printf` / `klog_puts`，那是内核日志 API，不是 9081 服务。
+`ps5/klog.h` 的 `klog_printf` / `klog_puts` 用于写入内核日志，不提供 TCP 网络服务。
 
 ### 2.5 `shellui` → `shellui.elf`（Toolbox UI）
 
 - 注入 `SceShellUI` 的 Mono 层
-- 替换/扩展 Debug Settings 风格菜单
+- 提供 Debug Settings 风格菜单与扩展入口
 - 工具箱与子页菜单 XML 均由 `ps5ui::Page` 动态组装（`toolbox_xml.cpp`）
 
 主要菜单能力：
 
 - 内容安装与管理（系统 PkgInstaller UI、附加内容管理）
-- Payload 与内核组件（Payload ELF、kstuff 管理）
+- Payload 与内核组件（用户 Payload；插件：kstuff、FTP）
 - 游戏辅助（金手指引擎、OnionHEN 游戏选项）
-- 监控与显示（游戏 overlay、Title ID）
+- 监控与显示（ShellUI 监控条、Title ID）
 - 账号激活
-- 系统与硬件（风扇、休息模式、外置 HDD、BD 激活）
+- 系统与硬件（风扇、外置 HDD、BD 激活）
+- 网络服务（Remote Play 配对）
 - 操作偏好（工具箱语言、手柄快捷键）
 - 高级调试 / 关于
 
+Remote Play 由 `remote_play.cpp` 负责：通过 `libSceRemoteplay.sprx` 解析
+原生 `sceRemoteplay*` API，启用 Remote Play 注册表设置，生成 PIN，并在后台
+确认客户端注册。视频串流与客户端传输仍由 PS5 原生 Remote Play 服务处理；
+OnionHEN 只负责配对和设备注册。配对信息可从网络页面保存到 USB。
+
 注入路径详见 [shellui-injection.md](shellui-injection.md)。
 
-### 2.6 `fps_elf` → `fps_elf.elf`
+HomeUI 顶部导航和 Settings Debug Settings 入口按固件 profile 覆盖 2.30–12.70；11.00 起 Settings 走 `debug_settings_old`。
 
-- 游戏内 overlay（FPS / CPU / RAM / GPU / IP / kstuff 状态等）
-- 通过 IPC 与 util / daemon 通信
+监控条 FPS 由 daemon skip-hook 采样：`libonion_fps` 通过 `/dev/dce` ioctl
+和 DMAP 读取游戏加载的 `libSceAgcDriver`，ShellUI 负责显示 FPS、CPU、GPU、
+RAM 与 IP。采样实现参考 [PHU Games Tools](https://github.com/ArkSama)（ArkSama）。
 
-### 2.7 内部静态库
+### 2.6 内部静态库
 
 | 库 | 作用 |
 |----|------|
@@ -201,26 +209,28 @@ OnionHEN/
 | **libonion_elfldr** | **唯一** ptrace/`pt_*` + inject 侧 `elfldr_load` / `elfldr_payload_args` / 内置 loader 侧 `elfldr_spawn` / `elfldr_read` / `elfldr_raise_privileges`；**authid 不在每条 ptrace 上翻转**（由 inject 入口一次提权） |
 | **libNineS** | 进程注入编排（`inject_elf` / stager）；**pt/elfldr 实现来自 libonion_elfldr** |
 | **libNidResolver** | PS5 模块 NID 解析（SHA1 等） |
-| **libonion_ipc** | **客户端**（injectee 双单例）+ **服务端传输环**（`ipc_server`：listen/accept/loop/reply）；daemon/util/shellui/fps 共用 |
+| **libonion_ipc** | **客户端**（injectee 双单例）+ **服务端传输环**（`ipc_server`：listen/accept/loop/reply；`accept` 失败重绑参考 ps5-payload-manager）；daemon/util/shellui 共用 |
 | **libonion_settings** | 统一 `config.ini` schema；各进程以 `onion::Settings g_settings` 为真相源 |
-| **libonion_detour** | 共享 Detour + hde64 钩子栈；shellui / fps_elf 共用 |
-| **libonion_proc** | 共享 proc/ucred（allproc 遍历、dynlib、authid）+ **sysctl 进程查询**（`find_pid` / `onion_find_pid_ex` / `isProcessAlive`）；daemon / util / shellui / bootstrapper / fps 共用 |
+| **libonion_fps** | skip-hook FPS 采样（PHU Tier 1A/1E/1F 公式、100 样本 multi-pass 校准、缓存 DMAP 物理地址、`/dev/dce` / AgcDriver / seqlock 发布）；实现来自 [PHU Games Tools](https://github.com/ArkSama) |
+| **libonion_detour** | 共享 Detour + hde64 钩子栈 |
+| **libonion_proc** | 共享 proc/ucred（allproc 遍历、dynlib、authid）+ **sysctl 进程查询**（`find_pid` / `onion_find_pid_ex` / `isProcessAlive`）；daemon / util / shellui / bootstrapper 共用 |
 | **libonion_platform** | 平台叶子：`if_exists` / `touch_file` / `rmtree`、`OnionHEN_log`（可配置 tag/路径）、`onion_notify`；修一处全树受益 |
-| **libonion_ready** | 跨进程 ready/runtime 标记（`/system_tmp/onionhen/ready/<name>` + wait/timeout）；替代固定 sleep 与 ad-hoc 文件旗 |
+| **libonion_ready** | 跨进程 ready/runtime 标记（`/system_tmp/onionhen/ready/<name>`）及 wait/timeout 协调 |
 | **onion/lnc.h** | 共享 LNC 启动 ABI（`LncAppParam` / `Flag` / 错误码）；daemon `launcher.hpp` 仅为 shim |
 | **libNineS** | ptrace 注入编排；**proc/ucred → libonion_proc**；**pt/elfldr → libonion_elfldr** |
 
-#### Daemon 模块（加深后）
+#### Daemon 模块
 
 | 模块 | 职责 |
 |------|------|
 | **msg.cpp** | 仅 `IPC_loop` + transport 胶水 |
 | **ipc_handle.cpp** | crit 命令表分发 |
-| **daemon_inject.cpp** | toolbox / fps 注入 |
+| **daemon_inject.cpp** | Toolbox 注入：冷启动/IPC 立即注入；休息恢复参考 kstuff-lite（SysCore EXEC + trophy sprx） |
 | **daemon_settings.cpp** | LoadSettings + mtime 缓存 |
 | **daemon_fs.cpp** | remount / chmod / test_sb / reply / fan / ForceKill / pid 查找 |
+| **daemon_fps.cpp** | render/skip-hook FPS 线程 + 独立 V-sync 采样线程；原始值无效时由 V-sync 线程兜底；仅 render 线程发布 `/system_tmp/onionhen/fps_sample` |
 
-#### ShellUI 模块（加深后）
+#### ShellUI 模块
 
 | 模块 | 职责 |
 |------|------|
@@ -237,12 +247,12 @@ OnionHEN/
 
 | 标记名 | 发布方 | 等待方 / 用途 |
 |--------|--------|----------------|
-| `util` | util 在 IPC 线程启动后 | bootstrapper 启动 util 之后 |
+| `util` | util 在 IPC 线程启动后，内容为自身 PID | bootstrapper、runtime supervisor 与关栈流程识别内置 util 实例 |
 | `kstuff` | bootstrapper 在 mprotect 成功后 | daemon 注入 toolbox 前 |
-| `daemon` | daemon 在 IPC 线程启动后 | bootstrapper 启动 daemon 之后 |
+| `daemon` | daemon 在 IPC 线程启动后，内容为自身 PID | bootstrapper 识别内置 daemon 实例 |
 | `toolbox` | shellui 注入完成后，内容为自身 PID | daemon 按当前 SceShellUI PID 判断跳过或重注入 |
-| `fps_overlay` | shellui（overlay FPS 开） | daemon 游戏循环触发 fps inject（替代旧的 fps_enabled 文件旗） |
-| `util_booted` | util 冷启动完成后 | rest-mode / toolbox 延迟路径（替代 `util_first_boot`） |
+| `fps_overlay` | 启动时 clear | ABI 占位标记；实时 FPS 状态发布在 `/system_tmp/onionhen/fps_sample` |
+| `util_booted` | util 冷启动完成后 | util 崩溃/重拉后向 daemon 请求再注入 Toolbox |
 
 #### IPC 分层（加深后）
 
@@ -262,7 +272,7 @@ g_settings            daemon/util：SettingsStore；shellui：Settings（UI 线�
 LoadSettings()        统一 bool 契约：刷新 store；缺文件用默认并成功
 mtime 门控            settings_config_newest_mtime — 任一 twin 更新即失效
 运行时原子量          util rest-mode / network 标志等
-OverlayLayout         仅 shellui：由 overlay_pos 派生的像素坐标
+OverlayLayout         仅 shellui：由 overlay.edge + overlay.align 派生；纯函数在 overlay_layout.hpp
 ```
 
 ### 2.8 主机工具（`scripts/`）
@@ -283,7 +293,7 @@ OverlayLayout         仅 shellui：由 overlay_pos 派生的像素坐标
 ## 3. IPC 与通信模型
 
 ```
-shellui / fps_elf / homebrew
+shellui / homebrew
         │ Unix domain socket
         ├─► /system_tmp/onionhen/ipc/crit_service  (daemon, 0x9xxxxxxx)
         └─► /system_tmp/onionhen/ipc/util_service  (util,   0x8xxxxxxx)
@@ -319,19 +329,22 @@ struct IPCMessage {
 
 - `BREW_UTIL_LAUNCH_PAYLOAD`
 - `BREW_UTIL_GET_GAME_VER` / `BREW_UTIL_GET_GAME_CHEAT` / `BREW_UTIL_TOGGLE_CHEAT`
-- `BREW_UTIL_DOWNLOAD_CHEATS`（`RELOAD_CHEATS` 已移除，热重载靠文件签名）
-- `BREW_UTIL_DOWNLOAD_KSTUFF`
-- `BREW_UTIL_SHELLUI_ON_STANDBY`
+- `BREW_UTIL_DOWNLOAD_CHEATS` / `BREW_UTIL_CHEAT_SYNC_STATUS` / `BREW_UTIL_CANCEL_CHEAT_SYNC`（git catalog 同步）
+- `BREW_UTIL_TOGGLE_FTP`（Toolbox 本次启停 ftpsrv）
+- `BREW_UTIL_FTP_STATUS`（查询 util 内部 FTP 线程状态）
 
-**已废弃但保留序号（兼容旧客户端）：**
+**ABI 占位命令：**
 
-- `BREW_UNUSED_ACTIVATE_DUMPER`（原 `ACTIVATE_DUMPER`，固定保留 `0x9000004`，避免 Itemzflow ABI 后续命令错位）
-- `BREW_UTIL_UNUSED_LEGACY_CMD_SERVER`（原 TOGGLE_LEGACY_CMD_SERVER / TCP 9028 已移除）
-- `BREW_UNUSED_DECRYPT_DIR`（原 DECRYPT_DIR，SELF 目录解密已移除）
-- `BREW_UNUSED_TESTKIT_CHECK`（原 TESTKIT_CHECK；客户端改为本地探测）
-- `BREW_UTIL_UNUSED_FTP`（原 TOGGLE_FTP）
-- `BREW_UTIL_UNUSED_KLOG`（原 TOGGLE_KLOG）
-- `BREW_UTIL_LAUNCH_ELFLDR`（旧手动启动命令；内置 9020 由 bootstrapper 管理）
+| 命令 | 当前行为 |
+|------|----------|
+| `BREW_UNUSED_ACTIVATE_DUMPER` | 固定占用 `0x9000004` 并返回 unsupported，保持后续命令序号稳定 |
+| `BREW_UNUSED_DECRYPT_DIR` / `BREW_UNUSED_TESTKIT_CHECK` | 返回 unsupported |
+| `BREW_UTIL_UNUSED_KLOG` / `BREW_UTIL_UNUSED_DPI` | 返回 unsupported |
+| `BREW_UTIL_UNUSED_SHELLUI_ON_STANDBY` | 返回 unsupported；休息恢复由 daemon 的 SceSysCore `NOTE_EXEC` 处理 |
+| `BREW_UTIL_UNUSED_RELOAD_CHEATS` | 返回 unsupported；金手指按文件签名热重载 |
+| `BREW_UTIL_UNUSED_DOWNLOAD_KSTUFF` / `BREW_UTIL_UNUSED_LEGACY_CMD_SERVER` | 返回 unsupported |
+| `BREW_UTIL_UNUSED_LEGACY_SERVICE_SCAN` / `BREW_UTIL_UNUSED_LEGACY_SERVICE_TOGGLE` | 返回 unsupported |
+| `BREW_UTIL_LAUNCH_ELFLDR` | 返回 unsupported；私有 9020 由 bootstrapper 管理 |
 
 ### 3.3 运行时路径
 
@@ -340,18 +353,20 @@ struct IPCMessage {
 | `/data/OnionHEN/` | 数据根目录 |
 | `/data/OnionHEN/config.ini` | 配置 |
 | `/data/OnionHEN/OnionHEN.log` | 日志 |
+| `/data/OnionHEN/OnionHEN_crash.log` | daemon 崩溃信号与回溯日志；跨重启追加保留 |
 | `/data/OnionHEN/payloads/` | payload `.elf`（唯一扩展包格式；启动时 stage 到同目录） |
 | `/system_tmp/onionhen/ipc/*` | Unix IPC socket |
 | `/system_tmp/onionhen/ready/<name>` | ready/runtime 标记；`toolbox` 内容为 SceShellUI PID |
-| `/system_tmp/onionhen/pid/<key>.PID` | payload/内部服务 PID 状态 |
+| `/system_tmp/onionhen/pid/<key>.PID` | 用户 Payload PID 状态 |
 | `/system_tmp/onionhen/app_launched` | ShellUI LaunchApp 返回值 |
 | `/system_tmp/onionhen/patch_plugin` | LaunchApp patch gate（外部标记；ShellUI 只读取） |
 
 ### 3.4 Itemzflow 兼容状态
 
 - `ITEM00001` 默认位于 `app_jailbreak.exact_title_ids`，避免 Loader 因未进入 jailbreak 流程而等待 30 秒；精确 Title ID 与前缀白名单均可通过 `config.ini` 覆盖。
-- Critical IPC 保留原版 `BREW_ACTIVATE_DUMPER=0x9000004` 的废弃槽位，确保 Itemzflow 使用的后续命令数值不发生错位。
-- **已知问题：**已发布的 ItemzCore 固定连接 `/system_tmp/etaHEN_crit_service`，当前 daemon 仅监听 `/system_tmp/onionhen/ipc/crit_service`，因此 Loader 通过后仍可能出现最长一分钟的 daemon 等待。后续应增加独立受监控的旧路径监听器，并与当前路径共用 `handleIPC`；不得直接替换当前路径，也不应依赖 Unix socket 符号链接。
+- Critical IPC 的 `0x9000004` 是稳定 ABI 占位值，后续命令序号与 Itemzflow 客户端一致。
+- ItemzCore 连接 `/system_tmp/etaHEN_crit_service`，daemon 监听
+  `/system_tmp/onionhen/ipc/crit_service`；使用固定前一路径的客户端可能等待最长一分钟。
 
 ---
 
@@ -363,12 +378,15 @@ struct IPCMessage {
 - 阻止系统更新（unmount `/update`）
 - **kstuff**：fself / fpkg 相关内核能力（通常 ≥ 3.00）
 - App jailbreak（按设置启停；SceSysCore 生命周期 + 沙盒 vnode 事件 + 白名单 TID，无常驻轮询）
+- 休息后 Toolbox 恢复（kstuff-lite：新 ShellUI PID + trophy sprx）
+- 休息后监听套接字重绑（ps5-payload-manager：IPC / TCP `accept` 失败自愈）
 - 双守护进程架构（util 可被 daemon 拉起）
 
 ### 4.2 用户界面（Toolbox）
 
-- Debug Settings 替代菜单
+- Debug Settings 风格菜单
 - 内容安装与管理、Payload 与内核组件
+- 插件（kstuff、FTP 服务器）
 - 游戏辅助、监控与显示
 - 账号激活
 - 系统与硬件、操作偏好
@@ -378,27 +396,19 @@ struct IPCMessage {
 ### 4.3 网络服务
 
 - 首跳依赖外部 **9021 elfldr**；它同时是私有 9020 的恢复根。用户 Payload 严格使用内置 **9020 onion_elfldr**，不回退 9021
+- **FTP**：util 内置 `ftpsrv` 源码模块，默认监听 **1337**；Toolbox 插件页提供本次启停、下次开机自启和端口配置
+- **Remote Play**：ShellUI 调用 PS5 原生 Remote Play API 完成 PIN 生成和客户端注册确认
+
+所有 `.elf` 文件名都使用相同的 Payload 页面、自动启动扫描和共享加载器，包括
+`kstuff`、`ftpsrv` 与 `ftpsrv-ps5`。内置服务只管理自身进程或线程，不停止同名
+用户 Payload；用户 Payload 仅由 Payload 页的明确停止操作终止。已有有效 PID
+记录时，后续启动和自动启动请求保持现有实例。相同端口的服务由 socket bind
+结果决定唯一端口所有者。
 
 ### 4.4 扩展
 
 - 自定义插件（兼容 [etaHEN SDK](https://github.com/LightningMods/etaHEN-SDK)）
 - `config.ini` 驱动的开关（overlay、快捷键等）
-
-### 4.5 已移除
-
-| 能力 | 说明 |
-|------|------|
-| 内嵌 9021 elfldr | 改为内置私有 9020 loader；9021 只作为外部首次引导 / 9020 恢复通道 |
-| FTP 1337 | 服务与 Toolbox 开关已移除 |
-| Legacy CMD 9028 | util TCP hijacker 协议与 Toolbox 开关已移除；app JB 仅 FIFO |
-| Klog server 9081 | 服务与 Toolbox 开关已移除 |
-| ps5debug / app-dumper | 不再内嵌 |
-| Byepervisor / hen.bin | 1.xx–2.xx HV 路径不打包 |
-| Discord RPC | 已移除 |
-| libSelfDecryptor | 已移除；SELF 目录解密 IPC 亦已移除 |
-| 沙盒内 `/data` 可见性补丁 | 仅路径可见，非越狱，已移除 |
-
----
 
 ## 5. 依赖组件
 
@@ -416,7 +426,8 @@ struct IPCMessage {
 
 | 组件 | 上游 | 角色 |
 |------|------|------|
-| **kstuff-lite** | [EchoStretch/kstuff-lite](https://github.com/EchoStretch/kstuff-lite) | 提供 `kstuff.elf`，同步进 bootstrapper |
+| **kstuff-lite** | [EchoStretch/kstuff-lite](https://github.com/EchoStretch/kstuff-lite) | 提供 `kstuff.elf`；休息后 Toolbox 恢复也参考其 ShellUI PID 监视 |
+| **ftpsrv** | [drakmor/ftpsrv](https://github.com/drakmor/ftpsrv) | 编译进 `util.elf` 的 FTP 源码模块 |
 
 ```bash
 git submodule update --init --recursive
@@ -438,7 +449,10 @@ git submodule update --init --recursive
 |----|------|
 | **libkeystone** (`third_party/keystone/`) | ShnExt 汇编 |
 
-C++ runtime 统一由 `PS5_PAYLOAD_SDK/target/lib` 提供。项目不再携带旧 curl/TLS、minizip/zlib/zstd 或外部 9021 服务镜像。用户 Payload 通过 `common/elfldr_remote.c` 严格走内置 9020；外部 9021 仅用于首次引导和恢复 9020。
+C++ runtime 由 `PS5_PAYLOAD_SDK/target/lib` 提供。金手指仓库同步链接 SDK
+`target/user/homebrew` 的 libcurl/OpenSSL，嵌入 SDK CA bundle 校验证书，并用
+miniz 定向提取 HTTPS ZIP 中的 `cheats/`。用户 Payload 通过
+`common/elfldr_remote.c` 使用私有 9020；外部 9021 用于首次引导和恢复 9020。
 
 ### 5.5 PS5 系统库 stub（`source/platform/ps5/stubs/*.so`）
 
@@ -446,7 +460,7 @@ C++ runtime 统一由 `PS5_PAYLOAD_SDK/target/lib` 提供。项目不再携带�
 
 - `libkernel_sys`
 - `SceSystemService` / `SceUserService`
-- `SceNetCtl`
+- `SceNetCtl` / `SceNet`
 - `SceNotification` / `SceRegMgr`
 - `SceSysCore` / `SceAppInstUtil`
 - `SceGnmDriver`
@@ -477,11 +491,11 @@ C++ runtime 统一由 `PS5_PAYLOAD_SDK/target/lib` 提供。项目不再携带�
 4. **UI = 进程注入**  
    Toolbox 不是独立 App，而是 ptrace 注入 ShellUI 的 Mono 代码。
 
-5. **kstuff 解耦**  
+5. **kstuff 来源**
    fPKG/fSELF 能力来自 kstuff-lite；可用 `/data/OnionHEN/kstuff.elf` 覆盖。
 
 6. **IPC 协议稳定**  
-   Unix socket；废弃命令保留序号，便于旧客户端不崩。
+   Unix socket；ABI 占位命令保持已发布的命令序号稳定。
 
 ---
 
@@ -490,10 +504,10 @@ C++ runtime 统一由 `PS5_PAYLOAD_SDK/target/lib` 提供。项目不再携带�
 | 文档 | 说明 |
 |------|------|
 | [../README.md](../README.md) | 项目总览、功能列表、配置、加载方式 |
-| [shellui-injection.md](shellui-injection.md) | ShellUI 注入路径与 libNineS 稳定性修复 |
+| [shellui-injection.md](shellui-injection.md) | ShellUI 注入路径、安全契约与失败行为 |
 | [pkg-writeup.md](pkg-writeup.md) | PS5 PKG 技术说明 |
 | [../source/README.md](../source/README.md) | 源码树与构建说明 |
-| [../third_party/README.md](../third_party/README.md) | 子模块与已移除第三方依赖 |
+| [../third_party/README.md](../third_party/README.md) | 第三方源码、子模块与运行时依赖 |
 
 ---
 

@@ -64,7 +64,7 @@ int CheatParserFactory::loadBuffer(const std::string &format,
     return -1;
   }
   auto parser = createByFormat(format);
-  LOG_INFO("[engine] parse format=%s size=%zu", parser->name(), size);
+  LOG_DEBUG("[engine] parse format=%s size=%zu", parser->name(), size);
   return parser->parse(data, size, out);
 }
 
@@ -78,7 +78,7 @@ int CheatParserFactory::loadFile(const std::string &path,
     return -1;
   }
 
-  LOG_INFO("[engine] load path=%s", path.c_str());
+  LOG_DEBUG("[engine] load path=%s", path.c_str());
   buf = onion_cheat_load_file_buffer(path.c_str(), &size);
   if (buf == nullptr || size <= 0) {
     LOG_ERROR("[engine] load failed path=%s", path.c_str());
@@ -92,8 +92,8 @@ int CheatParserFactory::loadFile(const std::string &path,
 
   onion_cheat_secure_zero(buf, static_cast<size_t>(size));
   free(buf);
-  LOG_INFO("[engine] loaded format=%s cheats=%zu rc=%d", parser->name(),
-               out.cheat_count, rc);
+  LOG_DEBUG("[engine] loaded format=%s cheats=%zu rc=%d", parser->name(),
+            out.cheat_count, rc);
   return rc;
 }
 

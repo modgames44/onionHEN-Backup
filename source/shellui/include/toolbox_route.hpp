@@ -5,9 +5,6 @@
  */
 #pragma once
 
-#include <cstddef>
-#include <cstring>
-#include <string>
 #include <string_view>
 
 namespace toolbox {
@@ -17,10 +14,14 @@ enum class Page : unsigned char {
   None = 0,           /**< unknown → original stream */
   DebugSettings,      /**< embedded toolbox XML */
   Payloads,
+  Plugins,            /**< built-in plugins (kstuff/ftpsrv) */
+  PluginConfig,       /**< per-plugin configuration page (plugin_config.xml) */
   Cheats,
   AutoPayloads,
   Account,
   Plapps,
+  CheatProgress,
+  RemotePlay,
   SuperuserPass,      /**< recognized; still use original stream */
   RedirectOgDebug,    /**< og_debug.xml → debug_settings resource */
 };
@@ -41,12 +42,16 @@ struct RouteInput {
 /** Flag snapshot after matching resource. */
 struct RouteFlags {
   bool is_payloads = false;
+  bool is_plugins = false;
+  bool is_plugin_config = false;
   bool is_su_menu = false;
   bool is_debug_settings = false;
   bool is_cheats = false;
   bool is_auto_payload = false;
   bool is_account = false;
   bool is_plapps = false;
+  bool is_cheat_progress = false;
+  bool is_remote_play = false;
 };
 
 struct RouteResult {
@@ -58,45 +63,28 @@ struct RouteResult {
 
 RouteResult resolve_resource(const RouteInput &in);
 
+/** Child routes whose page-stack pop should restore the owning parent route. */
+constexpr bool restores_parent_on_pop(Page page) {
+  return page == Page::CheatProgress || page == Page::RemotePlay ||
+         page == Page::PluginConfig;
+}
+
 /** Fixed Legacy resource paths (Sony Settings.Plugins module name is fixed). */
 inline constexpr std::string_view kAutoPayloadsXml =
     "Sce.Vsh.ShellUI.Legacy.src.Sce.Vsh.ShellUI.Settings.Plugins.auto_payloads.xml";
+inline constexpr std::string_view kPluginsXml =
+    "Sce.Vsh.ShellUI.Legacy.src.Sce.Vsh.ShellUI.Settings.Plugins.plugins.xml";
 inline constexpr std::string_view kAccountXml =
     "Sce.Vsh.ShellUI.Legacy.src.Sce.Vsh.ShellUI.Settings.Plugins.account.xml";
 inline constexpr std::string_view kPlappsXml =
     "Sce.Vsh.ShellUI.Legacy.src.Sce.Vsh.ShellUI.Settings.Plugins.plapps.xml";
+inline constexpr std::string_view kCheatProgressXml =
+    "Sce.Vsh.ShellUI.Legacy.src.Sce.Vsh.ShellUI.Settings.Plugins.cheat_progress.xml";
+inline constexpr std::string_view kRemotePlayXml =
+    "Sce.Vsh.ShellUI.Legacy.src.Sce.Vsh.ShellUI.Settings.Plugins.remote_play.xml";
 inline constexpr std::string_view kSuperuserXml =
     "Sce.Vsh.ShellUI.Legacy.src.Sce.Vsh.ShellUI.Settings.Plugins.superuser.xml";
 inline constexpr std::string_view kOgDebugXml =
     "Sce.Vsh.ShellUI.Legacy.src.Sce.Vsh.ShellUI.Settings.Plugins.og_debug.xml";
-
-// ---- Cheat map helpers (host-testable) ----
-
-constexpr std::size_t kCheatMapSize = 256;
-
-inline bool reset_cheat_map_if_tid_changed(std::string &current_tid, int *map,
-                                           std::size_t map_n,
-                                           std::string_view new_tid) {
-  if (!map || map_n == 0)
-    return false;
-  if (current_tid == new_tid)
-    return false;
-  current_tid.assign(new_tid);
-  std::memset(map, 0, map_n * sizeof(int));
-  return true;
-}
-
-inline void set_cheat_enabled(int *map, std::size_t map_n, int cheat_id,
-                              bool enabled) {
-  if (!map || cheat_id < 0 || static_cast<std::size_t>(cheat_id) >= map_n)
-    return;
-  map[cheat_id] = enabled ? 1 : 0;
-}
-
-inline bool get_cheat_enabled(const int *map, std::size_t map_n, int cheat_id) {
-  if (!map || cheat_id < 0 || static_cast<std::size_t>(cheat_id) >= map_n)
-    return false;
-  return map[cheat_id] != 0;
-}
 
 } // namespace toolbox

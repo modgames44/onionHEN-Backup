@@ -16,7 +16,8 @@ along with this program; see the file COPYING. If not, see
 
 #include <onion/platform.h>
 /* C++ headers before common_utils.h: the latter pulls stdatomic.h, which
- * breaks libc++ <atomic> if included first. */
+ * breaks libc++ <atomic> (pulled transitively via onion/settings.hpp) if
+ * included first. */
 #include <onion/settings.hpp>
 #include "common_utils.h"
 
@@ -24,55 +25,36 @@ along with this program; see the file COPYING. If not, see
 #include <string.h>
 #include <unistd.h>
 
-// External C declarations
-extern "C" {
-#include "common_utils.h"
+namespace {
 
-// Atomic state variables
-atomic_bool rest_mode_action = false;
-atomic_bool no_network_rest_mode_action = false;
-atomic_bool no_network_patched = false;
-atomic_bool real_rest_mode_detected = false;
-}
+// Console IP as last observed, used only to notify the user on change.
+char g_ip_address[ONION_NET_IP_ADDRESS_SIZE];
+pthread_mutex_t g_ip_lock = PTHREAD_MUTEX_INITIALIZER;
 
-// Global variables
-char ip_address[40];
-static pthread_mutex_t ip_lock = PTHREAD_MUTEX_INITIALIZER;
-extern atomic_bool not_connected;
+} // namespace
 
-// Network monitoring
 void check_addr_change(void) {
-  pthread_mutex_lock(&ip_lock);
-  char func_ip_address[40];
+  pthread_mutex_lock(&g_ip_lock);
 
-  if (get_ip_address(&func_ip_address[0], sizeof(func_ip_address)) < 0) {
-    pthread_mutex_unlock(&ip_lock);
+  char current[ONION_NET_IP_ADDRESS_SIZE];
+  if (get_ip_address(current, sizeof(current)) < 0) {
+    pthread_mutex_unlock(&g_ip_lock);
     return;
   }
 
-  if (get_ip_address(&ip_address[0], sizeof(ip_address)) < 0) {
-    pthread_mutex_unlock(&ip_lock);
-    return;
+  if (strcmp(g_ip_address, current) != 0) {
+    onion_notify(true, "notify.net.ip_changed", current);
+    strncpy(g_ip_address, current, sizeof(g_ip_address));
   }
 
-  bool ip_changed = strcmp(&ip_address[0], &func_ip_address[0]) != 0;
-  if (ip_changed) {
-    onion_notify(true, "notify.net.ip_changed", func_ip_address);
-    /* Clear rest-mode side flags; toolbox reinject is handled on the
-     * network-down path / ShellUI standby, not via TCP CMD. */
-    (void)rest_mode_action;
-    real_rest_mode_detected = not_connected = no_network_patched =
-        rest_mode_action = false;
-  }
-
-  pthread_mutex_unlock(&ip_lock);
+  pthread_mutex_unlock(&g_ip_lock);
 }
 
 void *ip_thread(void *arg) {
   (void)arg;
   do {
     sleep(1);
-  } while (get_ip_address(&ip_address[0], sizeof(ip_address)) < 0);
+  } while (get_ip_address(g_ip_address, sizeof(g_ip_address)) < 0);
 
   while (true) {
     check_addr_change();

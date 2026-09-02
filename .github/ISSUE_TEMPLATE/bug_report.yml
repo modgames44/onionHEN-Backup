@@ -84,7 +84,7 @@ body:
     id: logs
     attributes:
       label: Logs
-      description: Paste from `/data/OnionHEN/OnionHEN.log` and `OnionHEN_util_daemon.log`.
+      description: Attach `/data/OnionHEN/OnionHEN_crash.log` for a daemon crash, plus relevant lines from `OnionHEN.log` and `OnionHEN_util_daemon.log`.
       render: text
     validations:
       required: true

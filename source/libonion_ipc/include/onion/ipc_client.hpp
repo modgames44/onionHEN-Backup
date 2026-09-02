@@ -18,6 +18,8 @@ along with this program; see the file COPYING. If not, see
 
 #include <msg.hpp>
 #include <onion/log.h>
+#include <atomic>
+#include <cstdint>
 #include <mutex>
 #include <string>
 
@@ -50,8 +52,12 @@ public:
 
   bool is_util() const { return util_daemon_; }
 
-  void set_recv_timeout_ms(int ms) { recv_timeout_ms_ = ms; }
-  int recv_timeout_ms() const { return recv_timeout_ms_; }
+  void set_recv_timeout_ms(int ms) {
+    recv_timeout_ms_.store(ms, std::memory_order_relaxed);
+  }
+  int recv_timeout_ms() const {
+    return recv_timeout_ms_.load(std::memory_order_relaxed);
+  }
 
   // Low-level transport
   int OpenConnection(const char *path);
@@ -66,6 +72,10 @@ public:
   // High-level commands
   int GetDaemonPid();
   IPC_Ret ToggleSetting(DaemonCommands cmd, bool turn_on);
+  /** Query the in-process FTP module without inspecting a PID marker. */
+  bool FtpStatus();
+  /** Ask util to rebind an enabled FTP listener after network resume. */
+  bool RecoverFtp();
   void KillDaemon();
   /** Crit Unix IPC: util → restart ShellUI → daemon exit (BREW_SHUTDOWN_STACK). */
   void ShutdownStack();
@@ -75,11 +85,14 @@ public:
   bool GameVerFromTid(std::string tid, std::string &out_ver);
   bool Remount(const char *src, const char *dest);
   bool GetGameCheats(const std::string &tid, const std::string &ver,
-                     std::string &cheats);
+                     std::string &cheats, int pid = 0, int appid = 0);
   bool ToggleGameCheat(int pid, const std::string &tid, int cheat_index,
                        std::string &cheat_enabled,
                        const std::string &version = "");
-  void SendRestModeAction();
+  bool DownloadCheats(const char *catalog, const char *mirror,
+                      std::string &out);
+  bool CheatSyncStatus(std::string &out);
+  bool CancelCheatSync(uint32_t task_id, std::string &out);
   void Reload_Daemon_Settings();
   bool Launch_Elfldr();
   bool Set_Fan_Threshold(int temp, bool enabled);
@@ -95,7 +108,7 @@ private:
 
   bool util_daemon_;
   int socket_fd_;
-  int recv_timeout_ms_;
+  std::atomic<int> recv_timeout_ms_;
   mutable std::mutex mu_;
 
   const char *socket_path() const;

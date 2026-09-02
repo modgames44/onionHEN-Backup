@@ -17,19 +17,9 @@
 #include <sys/stat.h>
 
 extern "C" {
-  int sceUserServiceGetLoginUserIdList(void *list);
-  int sceUserServiceGetUserName(const int userId, char *userName, const size_t size);
   int sceSystemServiceGetAppIdOfRunningBigApp();
   int sceSystemServiceGetAppTitleId(int app_id, char *title_id);
 }
-
-namespace {
-
-struct UserServiceLoginUserIdList {
-  int user_id[4];
-};
-
-} // namespace
 
 bool GetFileContents(const char *path, char **buffer) {
   FILE *fp = fopen(path, "rb");
@@ -44,7 +34,7 @@ bool GetFileContents(const char *path, char **buffer) {
 
   if (size == 0) {
     fclose(fp);
-    LOG_INFO("size is 0");
+    LOG_ERROR("file is empty: %s", path);
     return false;
   }
 
@@ -80,31 +70,6 @@ bool Get_Running_App_TID(std::string &title_id, int &BigAppid) {
   return true;
 }
 
-bool isUserLoggedIn() {
-  bool isLoggedIn = false;
-  UserServiceLoginUserIdList userIdList{};
-  (void)memset(&userIdList, 0, sizeof(userIdList));
-
-  if (sceUserServiceGetLoginUserIdList(&userIdList) < 0)
-    return false;
-
-  for (int i = 0; i < 4; i++) {
-    char username[500] = {0};
-    int userid = userIdList.user_id[i];
-    if (userid == -1)
-      continue;
-    int ret = sceUserServiceGetUserName(userid, &username[0], sizeof(username));
-    LOG_INFO("sceUserServiceGetUserName returned %d", ret);
-    if (ret == 0) {
-      isLoggedIn = true;
-      break;
-    }
-  }
-
-  sleep(5);
-  return isLoggedIn;
-}
-
 bool Open_Utility_Elf(const char *path, uint8_t **buffer) {
   if (!path || !buffer) {
     LOG_ERROR("Invalid arguments: path or buffer is null.");
@@ -125,7 +90,7 @@ bool Open_Utility_Elf(const char *path, uint8_t **buffer) {
   }
 
   if (st.st_size == 0) {
-    LOG_INFO("File %s is empty.", path);
+    LOG_ERROR("File %s is empty.", path);
     close(fd);
     return false;
   }

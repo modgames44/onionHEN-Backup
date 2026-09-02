@@ -58,6 +58,22 @@ pid_t elfldr_remote_onion_write_and_launch_get_pid(const char *abs_path,
                                                    const uint8_t *elf,
                                                    size_t size);
 
+/**
+ * Launch an ELF already present at @abs_path through the private loader.
+ * @args is an optional whitespace-separated argv string. Returns the exact
+ * loader-reported PID (>1), or -1 on transport/protocol/spawn failure.
+ */
+pid_t elfldr_remote_onion_launch_file_get_pid(const char *abs_path,
+                                              const char *args);
+
+/**
+ * Stage @elf at @abs_path and launch it through the private loader with
+ * optional command-line @args. The staged file is left in place; callers that
+ * use a transient runtime path may unlink it after this function returns.
+ */
+pid_t elfldr_remote_onion_write_and_launch_get_pid_with_args(
+    const char *abs_path, const uint8_t *elf, size_t size, const char *args);
+
 #ifdef __cplusplus
 }
 #endif

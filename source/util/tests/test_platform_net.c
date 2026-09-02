@@ -82,6 +82,14 @@ static int test_terminates_unterminated_field(void) {
   return 0;
 }
 
+static int test_has_ipv4_follows_get_info(void) {
+  onion_test_netctl_set_result(0, "10.0.0.2");
+  TEST_ASSERT_TRUE(onion_net_has_ipv4());
+  onion_test_netctl_set_result((int32_t)SCE_NET_CTL_ERROR_NOT_CONNECTED, NULL);
+  TEST_ASSERT_TRUE(!onion_net_has_ipv4());
+  return 0;
+}
+
 int test_platform_net_suite(void) {
   int failures = 0;
   failures += onion_test_run("net.ip_ok", test_ip_ok);
@@ -92,5 +100,6 @@ int test_platform_net_suite(void) {
   failures += onion_test_run("net.bad_buffer", test_rejects_bad_buffer);
   failures +=
       onion_test_run("net.terminates_field", test_terminates_unterminated_field);
+  failures += onion_test_run("net.has_ipv4", test_has_ipv4_follows_get_info);
   return failures;
 }

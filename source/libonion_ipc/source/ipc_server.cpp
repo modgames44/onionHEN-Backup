@@ -18,6 +18,8 @@ along with this program; see the file COPYING. If not, see
 #include <onion/log.h>
 #include <onion/system_tmp.h>
 
+#include "onion_cjson.hpp"
+
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
@@ -121,6 +123,25 @@ int ipc_network_accept(int socket_fd) {
   return accept(socket_fd, nullptr, nullptr);
 }
 
+int ipc_unix_connect(const char *path) {
+  if (!path || !path[0])
+    return -1;
+
+  const int soc = socket(AF_UNIX, SOCK_STREAM, 0);
+  if (soc < 0)
+    return -1;
+
+  sockaddr_un server{};
+  server.sun_family = AF_UNIX;
+  strncpy(server.sun_path, path, sizeof(server.sun_path) - 1);
+  if (connect(soc, reinterpret_cast<struct sockaddr *>(&server),
+              SUN_LEN(&server)) == -1) {
+    close(soc);
+    return -1;
+  }
+  return soc;
+}
+
 int ipc_network_recv(int socket_fd, void *buffer, int32_t size) {
   int n = recv(socket_fd, buffer, size, 0);
   LOG_DEBUG("got %i bytes", n);
@@ -182,61 +203,38 @@ int ipc_network_send_full(int socket_fd, const void *buffer, int32_t size) {
 int ipc_network_close(int socket_fd) { return close(socket_fd); }
 
 std::string ipc_json_escape(const std::string &in) {
-  std::string out;
-  out.reserve(in.size() + 8);
-  for (unsigned char c : in) {
-    switch (c) {
-    case '\\':
-      out += "\\\\";
-      break;
-    case '"':
-      out += "\\\"";
-      break;
-    case '\b':
-      out += "\\b";
-      break;
-    case '\f':
-      out += "\\f";
-      break;
-    case '\n':
-      out += "\\n";
-      break;
-    case '\r':
-      out += "\\r";
-      break;
-    case '\t':
-      out += "\\t";
-      break;
-    default:
-      if (c < 0x20) {
-        char hex[8];
-        snprintf(hex, sizeof(hex), "\\u%04x", c);
-        out += hex;
-      } else {
-        out += static_cast<char>(c);
-      }
-      break;
-    }
+  const std::string quoted =
+      onion_cjson::print_owned(cJSON_CreateString(in.c_str()));
+  if (quoted.size() < 2 || quoted.front() != '"' || quoted.back() != '"') {
+    return {};
   }
-  return out;
+  return quoted.substr(1, quoted.size() - 2);
 }
 
 std::string ipc_format_reply_body(bool error, const std::string &out_var) {
-  /* Compact JSON; var is always a quoted escaped string. */
-  return std::string("{\"res\":") + std::to_string(error ? -1 : 0) +
-         ",\"var\":\"" + ipc_json_escape(out_var) + "\"}";
+  cJSON *root = cJSON_CreateObject();
+  if (!root || !cJSON_AddNumberToObject(root, "res", error ? -1 : 0) ||
+      !cJSON_AddStringToObject(root, "var", out_var.c_str())) {
+    cJSON_Delete(root);
+    return {};
+  }
+  return onion_cjson::print_owned(root);
 }
 
 void ipc_reply(int sender_socket, DaemonCommands reply_cmd, bool error,
                const std::string &out_var) {
-  const std::string body = ipc_format_reply_body(error, out_var);
+  std::string body = ipc_format_reply_body(error, out_var);
+  if (body.empty() || body.size() >= DAEMON_BUFF_MAX) {
+    error = true;
+    body = ipc_format_reply_body(true, "IPC response too large");
+  }
 
   IPCMessage outputMessage{};
   outputMessage.magic = 0xDEADBABE;
   outputMessage.cmd = reply_cmd;
   outputMessage.error = error ? -1 : 0;
   bzero(outputMessage.msg, sizeof(outputMessage.msg));
-  strncpy(outputMessage.msg, body.c_str(), sizeof(outputMessage.msg) - 1);
+  memcpy(outputMessage.msg, body.data(), body.size());
   ipc_message_force_nul(outputMessage);
 
   LOG_ERROR("error: %d", outputMessage.error);
@@ -252,44 +250,95 @@ void *ipc_server_loop(void *options_ptr) {
   }
 
   const char *tag = opts->tag ? opts->tag : "ipc";
-  int serverSocket = ipc_network_listen(opts->socket_path);
-  if (serverSocket < 0) {
-    LOG_ERROR("[%s] networkListen error %s", tag, strerror(errno));
-    return nullptr;
-  }
-
+  const bool stoppable = (opts->running != nullptr);
   int cli_new = 0;
-  while (true) {
-    int clientSocket = ipc_network_accept(serverSocket);
-    if (clientSocket < 0) {
-      LOG_ERROR("[%s] networkAccept error %s", tag, strerror(errno));
-      break;
-    }
 
-    LOG_DEBUG("[%s] Connection Accepted cl_nmb %i", tag, cli_new);
-
-    auto *client = new IpcClientArgs();
-    client->ip = "localhost";
-    client->socket = clientSocket;
-    client->cl_nmb = cli_new;
-
-    auto *pack = new ClientThreadArgs{client, opts->handler, tag};
-    pthread_t thr{};
-    if (pthread_create(&thr, nullptr, client_thread, pack) != 0) {
-      LOG_ERROR("[%s] pthread_create failed", tag);
-      ipc_network_close(clientSocket);
-      delete client;
-      delete pack;
+  while (!stoppable || opts->running->load()) {
+    int serverSocket = ipc_network_listen(opts->socket_path);
+    if (serverSocket < 0) {
+      LOG_ERROR("[%s] networkListen error %s", tag, strerror(errno));
+      LOG_DEBUG("rest: [%s] listen failed path=%s errno=%d", tag,
+                opts->socket_path, errno);
+      if (stoppable && !opts->running->load())
+        break;
+      sleep(1);
       continue;
     }
-    if (opts->detach_clients) {
-      pthread_detach(thr);
+    if (opts->server_fd)
+      opts->server_fd->store(serverSocket);
+    LOG_DEBUG("rest: [%s] listening path=%s fd=%d", tag, opts->socket_path,
+              serverSocket);
+
+    int clientSocket;
+    while ((clientSocket = ipc_network_accept(serverSocket)) >= 0) {
+      LOG_DEBUG("[%s] Connection Accepted cl_nmb %i", tag, cli_new);
+
+      auto *client = new IpcClientArgs();
+      client->ip = "localhost";
+      client->socket = clientSocket;
+      client->cl_nmb = cli_new;
+
+      auto *pack = new ClientThreadArgs{client, opts->handler, tag};
+      pthread_t thr{};
+      if (pthread_create(&thr, nullptr, client_thread, pack) != 0) {
+        LOG_ERROR("[%s] pthread_create failed", tag);
+        ipc_network_close(clientSocket);
+        delete client;
+        delete pack;
+        continue;
+      }
+      if (opts->detach_clients) {
+        pthread_detach(thr);
+      }
+      cli_new++;
     }
-    cli_new++;
+
+    // accept() failed: the listener is gone (e.g. after a standby resume the
+    // socket may be dead). Re-listen to restore service unless a permanent
+    // stop was requested. ipc_release_listen_fd owns the close so a concurrent
+    // restart cannot double-close.
+    LOG_DEBUG("rest: [%s] accept failed errno=%d (%s); re-listening", tag,
+              errno, strerror(errno));
+    if (opts->server_fd)
+      ipc_release_listen_fd(opts->server_fd);
+    else
+      ipc_network_close(serverSocket);
+    if (stoppable && !opts->running->load())
+      break;
+    LOG_WARN("[%s] networkAccept error %s; re-listening", tag, strerror(errno));
+    sleep(1);
   }
 
-  ipc_network_close(serverSocket);
   return nullptr;
+}
+
+void ipc_server_stop(IpcServerOptions *opts) {
+  if (!opts)
+    return;
+  if (opts->running)
+    opts->running->store(false);
+  ipc_server_restart(opts);
+}
+
+void ipc_release_fd(std::atomic<int> *fd) {
+  if (!fd)
+    return;
+  const int s = fd->exchange(-1);
+  if (s >= 0) {
+    LOG_DEBUG("rest: release listen fd=%d", s);
+    shutdown(s, SHUT_RDWR);
+    ipc_network_close(s);
+  }
+}
+
+void ipc_release_listen_fd(std::atomic<int> *fd) { ipc_release_fd(fd); }
+
+void ipc_server_restart(IpcServerOptions *opts) {
+  if (!opts)
+    return;
+  const char *tag = opts->tag ? opts->tag : "ipc";
+  LOG_DEBUG("rest: [%s] ipc_server_restart", tag);
+  ipc_release_listen_fd(opts->server_fd);
 }
 
 } // namespace onion

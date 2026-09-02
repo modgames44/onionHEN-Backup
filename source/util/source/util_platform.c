@@ -1,6 +1,8 @@
 #include <onion/log.h>
 #include "util_platform.h"
 
+#include "cJSON.hpp"
+
 #include <ctype.h>
 #include <errno.h>
 #include <stdio.h>
@@ -154,37 +156,41 @@ static int file_exists(const char *path) {
   return path != NULL && stat(path, &st) == 0;
 }
 
-static int extract_json_string(const char *json, const char *key, char *out,
-                               size_t out_size) {
-  char search[64];
-  const char *p = NULL;
-  size_t i = 0;
-
-  if (out_size == 0) {
+static int extract_version_from_json(const char *json, size_t json_size,
+                                     const char *const *keys,
+                                     size_t key_count, char *out,
+                                     size_t out_size) {
+  const char *parse_end = NULL;
+  cJSON *root;
+  size_t i;
+  if (json == NULL || out == NULL || out_size == 0) {
     return -1;
   }
   out[0] = '\0';
-  snprintf(search, sizeof(search), "\"%s\"", key);
-  p = strstr(json, search);
-  if (p == NULL) {
+  root = cJSON_ParseWithLengthOpts(json, json_size, &parse_end, 0);
+  while (root != NULL && parse_end < json + json_size &&
+         isspace((unsigned char)*parse_end)) {
+    ++parse_end;
+  }
+  if (root != NULL && parse_end != json + json_size) {
+    cJSON_Delete(root);
     return -1;
   }
-  p = strchr(p + strlen(search), ':');
-  if (p == NULL) {
+  if (!cJSON_IsObject(root)) {
+    cJSON_Delete(root);
     return -1;
   }
-  while (*++p != '\0' && isspace((unsigned char)*p)) {
+  for (i = 0; i < key_count; ++i) {
+    cJSON *item = cJSON_GetObjectItemCaseSensitive(root, keys[i]);
+    if (cJSON_IsString(item) && item->valuestring != NULL &&
+        item->valuestring[0] != '\0') {
+      snprintf(out, out_size, "%s", item->valuestring);
+      cJSON_Delete(root);
+      return 0;
+    }
   }
-  if (*p != '"') {
-    return -1;
-  }
-  ++p;
-  while (i + 1 < out_size && p[i] != '\0' && p[i] != '"') {
-    out[i] = p[i];
-    ++i;
-  }
-  out[i] = '\0';
-  return out[0] != '\0' ? 0 : -1;
+  cJSON_Delete(root);
+  return -1;
 }
 
 /* Minimal SFO string reader for APP_VER / VERSION (same need as GET_GAME_VER). */
@@ -272,16 +278,15 @@ int util_resolve_game_version(const char *title_id, char *out, size_t out_size) 
     static const char *keys[] = {"contentVersion", "content_version",
                                  "titleVersion", "version", "APP_VER"};
     for (i = 0; i < sizeof(ps5_json_paths) / sizeof(ps5_json_paths[0]); ++i) {
-      size_t k;
       snprintf(path, sizeof(path), ps5_json_paths[i], title_id);
       if (util_file_read_alloc(path, &buf, &buf_size, 256 * 1024) < 0) {
         continue;
       }
-      for (k = 0; k < sizeof(keys) / sizeof(keys[0]); ++k) {
-        if (extract_json_string(buf, keys[k], out, out_size) == 0) {
-          free(buf);
-          return 0;
-        }
+      if (extract_version_from_json(buf, buf_size, keys,
+                                    sizeof(keys) / sizeof(keys[0]), out,
+                                    out_size) == 0) {
+        free(buf);
+        return 0;
       }
       free(buf);
       buf = NULL;

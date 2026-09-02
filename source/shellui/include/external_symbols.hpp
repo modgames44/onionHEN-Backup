@@ -447,30 +447,6 @@ typedef struct app_info {
   char     unknown2[0x3c];
 } app_info_t;
 
-typedef struct pkg_metadata {
-    const char* uri;
-    const char* ex_uri;
-    const char* playgo_scenario_id;
-    const char* content_id;
-    const char* content_name;
-    const char* icon_url;
-} pkg_metadata_t;
-
-
-typedef struct pkg_info {
-    char content_id[48];
-    int type;
-    int platform;
-} pkg_info_t;
-
-
-typedef struct playgo_info {
-    char lang[8][30];
-    char scenario_ids[3][64];
-    char content_ids[64];
-    long unknown[810];
-} playgo_info_t;
-
 typedef uint32_t(*SceLncUtilLaunchAppType)(const char* tid, const char* argv[], LncAppParam* param);
 extern SceLncUtilLaunchAppType sceLncUtilLaunchApp_dyn;
 uint32_t sceLncUtilLaunchApp(const char* tid, const char* argv[], LncAppParam* param);
@@ -507,6 +483,12 @@ extern  int (*sceKernelJitCreateAliasOfSharedMemory)(int handle, int protection,
 extern  int (*sceKernelJitMapSharedMemory)(int handle, int protection, void **destination);
 extern int(*ioctl)(int, int, void*);
 extern int (*sceRegMgrGetInt)(long, int*);
+
+/* ====================================== Dynamic Remote Play Symbols ===================================*/
+extern int (*sceRemoteplayInitialize)(void*, size_t);
+extern int (*sceRemoteplayGeneratePinCode)(uint32_t*);
+extern int (*sceRemoteplayConfirmDeviceRegist)(int*, int*);
+extern int (*sceRemoteplayNotifyPinCodeError)(int);
 
 
 /* ====================================== Dynamic Mono Symbols ===================================*/
@@ -564,7 +546,3 @@ extern int (*sceShellUIUtilLaunchByUri)(const char* uri, SceShellUIUtilLaunchByU
 /* WRAPPERS */
 int sceSystemServiceGetAppId(const char * tid);
 void KillAllWithName(const char * name, int signal);
-extern "C" {
-
-    int sceAppInstUtilInstallByPackage(pkg_metadata* arg1, pkg_info* pkg_info, playgo_info* arg2);
-}

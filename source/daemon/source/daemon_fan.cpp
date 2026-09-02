@@ -86,7 +86,7 @@ void *fan_maintenance_thread(void *args) noexcept {
     const onion::Settings cfg = g_settings.snapshot();
     if (cfg.enable_fan_speed) {
       if (!holding || held_threshold != cfg.fan_threshold) {
-        LOG_INFO("fan maintenance: holding threshold %d C", cfg.fan_threshold);
+        LOG_DEBUG("fan maintenance: holding threshold %d C", cfg.fan_threshold);
         holding = true;
         held_threshold = cfg.fan_threshold;
         logged_write_error = false;
@@ -98,7 +98,7 @@ void *fan_maintenance_thread(void *args) noexcept {
         logged_write_error = true;
       }
     } else if (holding) {
-      LOG_INFO("fan maintenance: idle (automatic)");
+      LOG_DEBUG("fan maintenance: idle (automatic)");
       holding = false;
       held_threshold = -1;
       logged_write_error = false;

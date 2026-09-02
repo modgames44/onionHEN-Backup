@@ -12,6 +12,7 @@
 /* --- helpers -------------------------------------------------------------- */
 
 static char g_path[64];
+static char g_crash_path[72];
 
 static void cleanup_log_files(void) {
   char rotated[80];
@@ -23,10 +24,12 @@ static void cleanup_log_files(void) {
   /* Clean up artifacts produced by the previous one-generation policy. */
   snprintf(rotated, sizeof(rotated), "%s.old", g_path);
   unlink(rotated);
+  unlink(g_crash_path);
 }
 
 static void begin(const char *tag) {
   snprintf(g_path, sizeof(g_path), "/tmp/onion-log-test-%d", (int)getpid());
+  snprintf(g_crash_path, sizeof(g_crash_path), "%s-crash", g_path);
   cleanup_log_files();
   onion_log_set_max_bytes(0); /* restore default cap */
   onion_log_set_level(ONION_LOG_TRACE);
@@ -34,6 +37,7 @@ static void begin(const char *tag) {
 }
 
 static void end(void) {
+  onion_log_configure_crash(NULL);
   onion_log_configure("OnionHEN", NULL);
   cleanup_log_files();
   onion_log_set_level(ONION_LOG_INFO);
@@ -290,6 +294,33 @@ static int test_emergency_bypasses_level(void) {
   return 0;
 }
 
+/* Crash records use a dedicated append-only sink; ordinary records stay out. */
+static int test_emergency_preserves_crash_sink(void) {
+  char main_buf[512];
+  char crash_buf[512];
+  begin("CrashSink");
+
+  FILE *previous = fopen(g_crash_path, "w");
+  TEST_ASSERT_TRUE(previous != NULL);
+  fputs("previous-crash\n", previous);
+  fclose(previous);
+
+  onion_log_configure_crash(g_crash_path);
+  LOG_ERROR("ordinary-record");
+  onion_log_set_level(ONION_LOG_OFF);
+  onion_log_emergency("fatal-signal %d", 11);
+
+  read_file(g_path, main_buf, sizeof(main_buf));
+  read_file(g_crash_path, crash_buf, sizeof(crash_buf));
+  TEST_ASSERT_TRUE(strstr(main_buf, "ordinary-record") != NULL);
+  TEST_ASSERT_TRUE(strstr(main_buf, "fatal-signal 11") != NULL);
+  TEST_ASSERT_TRUE(strstr(crash_buf, "previous-crash") != NULL);
+  TEST_ASSERT_TRUE(strstr(crash_buf, "fatal-signal 11") != NULL);
+  TEST_ASSERT_TRUE(strstr(crash_buf, "ordinary-record") == NULL);
+  end();
+  return 0;
+}
+
 int test_platform_log_suite(void) {
   int failures = 0;
   failures += onion_test_run("log.file_sink", test_log_file_sink);
@@ -307,5 +338,7 @@ int test_platform_log_suite(void) {
   failures += onion_test_run("log.level_name_roundtrip", test_level_name_roundtrip);
   failures += onion_test_run("log.set_level_clamps", test_set_level_clamps);
   failures += onion_test_run("log.emergency_bypasses_level", test_emergency_bypasses_level);
+  failures += onion_test_run("log.emergency_preserves_crash_sink",
+                             test_emergency_preserves_crash_sink);
   return failures;
 }

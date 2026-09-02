@@ -44,6 +44,30 @@ static int test_touch_and_exists(void) {
   return 0;
 }
 
+static int test_mkdir_tree(void) {
+  char dir[64];
+  char nested[160];
+  char too_long[1025];
+  struct stat st;
+
+  TEST_ASSERT_TRUE(!mkdir_tree(NULL));
+  TEST_ASSERT_TRUE(!mkdir_tree(""));
+  memset(too_long, 'a', sizeof(too_long) - 1);
+  too_long[sizeof(too_long) - 1] = '\0';
+  TEST_ASSERT_TRUE(!mkdir_tree(too_long));
+
+  TEST_ASSERT_EQ_INT(0, make_temp_dir(dir, sizeof(dir)));
+  snprintf(nested, sizeof(nested), "%s/a/b/c", dir);
+  TEST_ASSERT_TRUE(mkdir_tree(nested));
+  TEST_ASSERT_TRUE(if_exists(nested));
+  TEST_ASSERT_EQ_INT(0, stat(nested, &st));
+  TEST_ASSERT_TRUE(S_ISDIR(st.st_mode));
+  TEST_ASSERT_TRUE(mkdir_tree(nested));
+
+  TEST_ASSERT_TRUE(rmtree(dir));
+  return 0;
+}
+
 static int test_rmtree_nested(void) {
   char dir[64];
   char sub[128];
@@ -63,10 +87,48 @@ static int test_rmtree_nested(void) {
   return 0;
 }
 
+static size_t progress_calls;
+static size_t progress_completed;
+static size_t progress_total;
+
+static void capture_rmtree_progress(size_t completed, size_t total,
+                                    void *user) {
+  (void)user;
+  ++progress_calls;
+  progress_completed = completed;
+  progress_total = total;
+}
+
+static int test_rmtree_progress(void) {
+  char dir[64];
+  char sub[128];
+  char file[160];
+  TEST_ASSERT_EQ_INT(0, make_temp_dir(dir, sizeof(dir)));
+  snprintf(sub, sizeof(sub), "%s/nested", dir);
+  TEST_ASSERT_EQ_INT(0, mkdir(sub, 0777));
+  snprintf(file, sizeof(file), "%s/a.txt", sub);
+  TEST_ASSERT_TRUE(touch_file(file));
+  snprintf(file, sizeof(file), "%s/b.txt", dir);
+  TEST_ASSERT_TRUE(touch_file(file));
+
+  progress_calls = 0;
+  progress_completed = 0;
+  progress_total = 0;
+  TEST_ASSERT_TRUE(
+      rmtree_with_progress(dir, capture_rmtree_progress, NULL));
+  TEST_ASSERT_TRUE(!if_exists(dir));
+  TEST_ASSERT_EQ_U64(4, progress_total);
+  TEST_ASSERT_EQ_U64(progress_total, progress_completed);
+  TEST_ASSERT_EQ_U64(5, progress_calls);
+  return 0;
+}
+
 int test_platform_fs_suite(void) {
   int failures = 0;
   failures += onion_test_run("fs_if_exists_null_missing", test_if_exists_null_and_missing);
   failures += onion_test_run("fs_touch_and_exists", test_touch_and_exists);
+  failures += onion_test_run("fs_mkdir_tree", test_mkdir_tree);
   failures += onion_test_run("fs_rmtree_nested", test_rmtree_nested);
+  failures += onion_test_run("fs_rmtree_progress", test_rmtree_progress);
   return failures;
 }

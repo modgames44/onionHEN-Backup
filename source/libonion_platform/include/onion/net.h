@@ -5,6 +5,7 @@
 
 #pragma once
 
+#include <stdbool.h>
 #include <stddef.h>
 
 #ifdef __cplusplus
@@ -45,6 +46,13 @@ typedef enum {
  * @param out_size  size of `out`; must be >= ONION_NET_IP_ADDRESS_SIZE
  */
 onion_net_ip_status onion_net_get_ip_address(char *out, size_t out_size);
+
+/**
+ * True when the console currently has an IPv4 address (cable/Wi-Fi associated).
+ * This is the local link check used before starting a download; it does not
+ * probe the internet or a specific git host.
+ */
+bool onion_net_has_ipv4(void);
 
 #ifdef __cplusplus
 }

@@ -96,8 +96,6 @@ struct ioctl_C0105203_args
 
 void __syscall();
 extern bool is_patches_plugin_running;
-// Original function pointer type
-typedef int (*DecryptRnpsBundle_t)(uint8_t* data, int offset, int size);
 
 /* Minimal DIR surface used by payload scanners (not full BSD dirent). */
 typedef struct _dirdesc {
@@ -120,7 +118,6 @@ extern "C" int closedir(DIR*);
 void notify(const char* text, ...);
 
 extern uint64_t(*GetManifestResourceStream_Original)(uint64_t inst, MonoString* FileName);
-extern uint64_t(*GetManifestResourceInternal_Orig)(MonoObject* instance, MonoString* name, int* size, MonoObject& module);
 extern void (*DebugSettings_GetModel_Orig)(MonoObject* instance, MonoObject* param, MonoObject* promise);
 extern void (*ReactNavigatorManager_UpdateNavigationState_Orig)(MonoObject* instance, MonoObject* state);
 extern  void (*OnShareButton_orig)(MonoObject* data);
@@ -146,7 +143,6 @@ void Patch_Main_thread_Check(MonoImage * image_core);
 uint64_t Get_Address_of_Method(MonoImage* Assembly_Image, const char* Name_Space, const char* Class_Name, const char* Method_Name, int Param_Count);
 uint64_t Get_Address_of_Method(MonoImage* Assembly_Image, MonoClass* klass, const char* Method_Name, int Param_Count);
 uint64_t GetManifestResourceStream_Hook(uint64_t inst, MonoString* FileName);
-uint64_t GetManifestResourceInternal_Hook(MonoObject* instance, MonoString* name, int* size, MonoObject& module);
 void DebugSettings_GetModel_Hook(MonoObject* instance, MonoObject* param, MonoObject* promise);
 void ReactNavigatorManager_UpdateNavigationState_Hook(MonoObject* instance, MonoObject* state);
 MonoObject* New_Mono_XML_From_String(std::string xml_doc, MonoDomain* domain);
@@ -155,26 +151,31 @@ int ini_parser_load(IniParser* parser, const char* filename);
 const char* ini_parser_get(IniParser* parser, const char* key, const char* default_value);
 bool LoadSettings();
 bool SaveSettings();
-/** Recompute g_overlay_layout from g_settings.overlay_pos. */
+/** Recompute g_overlay_layout from overlay edge and align. */
 void apply_overlay_layout();
+/** Apply the overlay layout using the live ShellUI logical canvas dimensions. */
+void apply_overlay_layout(float screen_w, float screen_h);
+/** Read both logical canvas dimensions from a ShellUI RootWidget. */
+bool resolve_root_dimensions(MonoObject *root, float *screen_w, float *screen_h);
 /** Persist g_settings and optionally reload daemon/util settings via IPC. */
 void settings_commit(bool reload_main = false, bool reload_util = false);
 
 /**
- * After cold inject with home_screen.show_title_ids on, queue a one-shot
- * NPXS40002 ReloadApp
- * for the next UI-thread poll (OnRender). Never call ReloadRNPSApp from the
+ * Queue one NPXS40002 ReloadApp for the next OnRender. Display-TID spoof and
+ * HomeUI top-nav patch both need the same Home scene refresh; coalescing
+ * avoids two ReloadApp calls on one tick. Never call ReloadRNPSApp from the
  * inject worker. Not timed — readiness is hooks-ready + UI thread, not
  * onion_ready files (those are daemon/process handshake only).
  */
-void shellui_request_display_tids_home_reload(void);
-/** Drain one-shot home reload; call only from UI thread after hooks ready. */
-void shellui_poll_display_tids_home_reload(void);
+void shellui_request_home_reload(void);
+/** Drain the one-shot Home reload; call only from UI thread after hooks ready. */
+void shellui_poll_home_reload(void);
+
+/** UI-thread ticker for the cheat-download XML progress page. */
+void shellui_poll_cheat_progress(void);
 
 bool SetVersionString(const char* str);
 int SendShelluiNotify();
-void Terminate();
-extern int (*Orig_AppInstUtilInstallByPackage)(MonoString* uri, MonoString* ex_uri, MonoString* playgo_scenario_id, MonoString* content_id, MonoString* content_name, MonoString* icon_url, uint32_t slot, bool is_playgo_enabled, MonoObject* pkg_info, MonoArray* languages, MonoArray* playgo_scenario_ids, MonoArray* content_ids);
 
 template <typename result>
 result Get_Property(MonoClass* Klass, MonoObject* Instance, const char* Property_Name)
@@ -320,15 +321,17 @@ result Invoke(MonoImage* Assembly_Image, MonoClass* klass, MonoObject* Instance,
 /* ================================= ORIG HOOKED MONO FUNCS ============================================= */
 extern int (*oOnPress)(MonoObject* Instance, MonoObject* element, MonoObject* e);
 extern int (*oOnPreCreate)(MonoObject* Instance, MonoObject* element);
+extern void (*oUserCustomElementReset)(MonoObject* Instance, MonoObject* item);
+extern void (*oSettingPageStackOnPopping)(MonoObject* Instance,
+                                          MonoObject* outgoing,
+                                          MonoObject* incoming);
 extern MonoString* (*CxmlUri)(MonoObject* obj,MonoString* uri);
-extern void (*oTerminate)(void);
 
 extern bool (*boot_orig)(MonoString* uri, int opt, MonoString* titleIdForBootAction);
 extern bool (*boot_orig_2)(MonoString* uri, int opt);
 extern GamePadData (*GetData)(int deviceIndex);
 extern MonoString *(*oGetString)(MonoObject *Instance, MonoString *str);
 extern void (*createJson)(MonoObject*, MonoObject* array, MonoString* id, MonoString* label, MonoString* actionUrl, MonoString* actionId, MonoString* messageId, MonoObject* subMenu, bool enable);
-extern DecryptRnpsBundle_t DecryptRnpsBundle;
 
 extern int (*__sys_regmgr_call)(long, long, int*, int*, long);
 
@@ -360,6 +363,10 @@ MonoObject* New_Object(MonoClass* Klass);
 MonoString *GetString_Hook(MonoObject *Instance, MonoString *str);
 int OnPress_Hook(MonoObject* Instance, MonoObject* element, MonoObject* e);
 int OnPreCreate_Hook(MonoObject* Instance, MonoObject* element);
+void UserCustomElementReset_Hook(MonoObject* Instance, MonoObject* item);
+void SettingPageStackOnPopping_Hook(MonoObject* Instance,
+                                    MonoObject* outgoing,
+                                    MonoObject* incoming);
 MonoImage * getDLLimage(const char* dll_file);
 MonoString* CxmlUri_Hook(MonoObject* obj, MonoString* uri);
 MonoObject* InvokeByDesc(MonoClass* p_Class, const char* p_MethodDesc, void* p_Instance, void* p_Args);
@@ -385,8 +392,6 @@ GamePadData GetData_hook(int deviceIndex);
 void OnShareButton(MonoObject * data);
 void CaptureScreen_old(MonoObject*  inst, int userId, long deviceId, int capType, MonoObject* capInfo);
 void CaptureScreen_new(MonoObject*  inst, int userId, long deviceId, int capType,  MonoString* format, MonoObject* capInfo);
-int DecryptRnpsBundle_Hook(uint8_t* data, int offset, int size);
-int rnps_decrypt_block(void* buffer, int size);
 int ioctl_hook (int fd, unsigned long request, void *argp);
 int LaunchApp(MonoString* titleId, uint64_t* args, int argsSize, LaunchAppParam *param);
 int sceRegMgrGetInt_hook(long regid, int* out_val);

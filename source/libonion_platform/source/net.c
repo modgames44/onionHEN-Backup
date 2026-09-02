@@ -48,3 +48,8 @@ onion_net_ip_status onion_net_get_ip_address(char *out, size_t out_size) {
   out[sizeof(info.ip_address) - 1] = '\0';
   return ONION_NET_IP_OK;
 }
+
+bool onion_net_has_ipv4(void) {
+  char ip[ONION_NET_IP_ADDRESS_SIZE];
+  return onion_net_get_ip_address(ip, sizeof(ip)) == ONION_NET_IP_OK;
+}

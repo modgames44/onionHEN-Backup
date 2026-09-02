@@ -93,6 +93,16 @@ bool process_has_name(pid_t pid, const char *expected) {
          strcmp(name, expected) == 0;
 }
 
+pid_t owned_ready_process_pid(const char *ready_name,
+                              const char *expected_process_name) {
+  pid_t pid = -1;
+  if (onion_ready_read_pid(ready_name, &pid) &&
+      process_has_name(pid, expected_process_name))
+    return pid;
+  onion_ready_clear(ready_name);
+  return -1;
+}
+
 pid_t private_loader_pid() {
   const pid_t recorded = read_pid_marker(ONION_SYSTEM_TMP_ELFLDR_STATE);
   if (process_has_name(recorded, "onion_elfldr.elf"))
@@ -100,9 +110,7 @@ pid_t private_loader_pid() {
 
   if (recorded > 1)
     unlink(ONION_SYSTEM_TMP_ELFLDR_STATE);
-
-  const pid_t found = onion_find_pid("onion_elfldr.elf");
-  return process_has_name(found, "onion_elfldr.elf") ? found : -1;
+  return -1;
 }
 
 bool private_loader_busy(pid_t loader_pid) {
@@ -187,9 +195,7 @@ RecoveryResult recover_private_loader(bool recover_timed_out_busy_loader) {
 }
 
 bool util_running() {
-  return onion_find_pid("onion_util.elf") > 1 ||
-         onion_find_pid("util.elf") > 1 ||
-         onion_find_pid("OnionHEN Utility") > 1;
+  return owned_ready_process_pid(ONION_READY_UTIL, "onion_util.elf") > 1;
 }
 
 bool restart_util_via_private_loader() {
@@ -218,6 +224,12 @@ unsigned recovery_backoff(int failures) {
 }
 
 } // namespace
+
+pid_t runtime_owned_util_pid() {
+  return owned_ready_process_pid(ONION_READY_UTIL, "onion_util.elf");
+}
+
+pid_t runtime_owned_private_loader_pid() { return private_loader_pid(); }
 
 void *runtime_supervisor_thread(void *args) noexcept {
   (void)args;

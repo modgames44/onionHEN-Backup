@@ -77,6 +77,13 @@ extern volatile int onion_log_runtime_level;
 /** Configure tag and optional file sink. Pass NULL path to disable the file. */
 void onion_log_configure(const char *tag, const char *log_path);
 
+/**
+ * Configure the append-only crash sink used by onion_log_emergency().
+ * Existing contents are preserved across process restarts. Pass NULL to
+ * disable it.
+ */
+void onion_log_configure_crash(const char *crash_path);
+
 /** Bound the file sink. 0 restores ONION_LOG_DEFAULT_MAX_BYTES. */
 void onion_log_set_max_bytes(size_t max_bytes);
 
@@ -92,10 +99,10 @@ void onion_log_write(onion_log_level level, const char *fmt, ...)
     __attribute__((format(printf, 2, 3)));
 
 /**
- * Fault-handler path: formats onto the stack and writes straight to the sinks
- * with no locking and no allocation, so it stays usable when the process is
- * already dying and when the log lock may be held by the faulting thread.
- * Bypasses both gates — a crash is always worth recording.
+ * Fault-handler path: formats onto the stack and writes straight to the normal
+ * and crash sinks with no locking and no allocation, so it stays usable when
+ * the process is already dying and when the log lock may be held by the
+ * faulting thread. Bypasses both gates — a crash is always worth recording.
  */
 void onion_log_emergency(const char *fmt, ...)
     __attribute__((format(printf, 1, 2)));

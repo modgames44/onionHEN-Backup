@@ -60,6 +60,7 @@ add_subdirectory(libNidResolver)
 # libSelfDecryptor removed from OnionHEN (FTP uses local decrypt_self only)
 # Shared proc/ucred before NineS (inject path links these symbols).
 add_subdirectory(libonion_proc)
+add_subdirectory(libonion_fps)
 add_subdirectory(libonion_platform)
 add_subdirectory(libonion_payload)
 add_subdirectory(libonion_ipc)

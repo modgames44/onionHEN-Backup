@@ -15,6 +15,7 @@ along with this program; see the file COPYING. If not, see
 <http://www.gnu.org/licenses/>.  */
 
 #include "faulthandler.h"
+#include "bootstrap_notify.h"
 
 #include <onion/fault_frame.h>
 #include <onion/log.h>
@@ -24,8 +25,6 @@ along with this program; see the file COPYING. If not, see
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
-
-void notify(const char *text);
 
 static void (*g_cleanup_handler)(void) = NULL;
 
@@ -67,7 +66,7 @@ static void fault_handler(int sig) {
 void fault_handler_init(void (*cleanup_handler)(void)) {
 
 	if (setjmp(g_catch_buf) != 0) {
-		notify("notify.crash.resolved");
+		bootstrap_notify("notify.crash.resolved");
 	}
 	g_cleanup_handler = cleanup_handler;
 	signal(SIGSEGV, fault_handler);

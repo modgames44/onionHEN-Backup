@@ -12,6 +12,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <netinet/in.h>
+#include <poll.h>
 #include <signal.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -487,12 +488,35 @@ static int serve_elfldr(uint16_t port) {
   write_state_file();
 
   while(1) {
+    struct pollfd pfd;
+    memset(&pfd, 0, sizeof(pfd));
+    pfd.fd = srvfd;
+    pfd.events = POLLIN;
+
+    const int pr = poll(&pfd, 1, 1000);
+    if (pr < 0) {
+      if (errno == EINTR)
+        continue;
+      LOG_ERROR("poll failed: %s", strerror(errno));
+      break;
+    }
+    if (pr == 0)
+      continue;
+    if (pfd.revents & (POLLERR | POLLHUP | POLLNVAL)) {
+      LOG_WARN("listen socket dead; re-binding :%u", port);
+      close(srvfd);
+      return 0;
+    }
+
     struct sockaddr_in cliaddr;
     socklen_t socklen = sizeof(cliaddr);
     int connfd = accept(srvfd, (struct sockaddr*)&cliaddr, &socklen);
     if(connfd < 0) {
+      if (errno == EINTR)
+        continue;
       LOG_ERROR("accept failed: %s", strerror(errno));
-      break;
+      close(srvfd);
+      return 0;
     }
     on_connection(connfd);
     close(connfd);

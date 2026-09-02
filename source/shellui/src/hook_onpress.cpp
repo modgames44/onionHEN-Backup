@@ -64,6 +64,10 @@ OnPressResult dispatch_toolbox_press(toolbox::OnPressDomain domain,
   case toolbox::OnPressDomain::AutoPayloads:
     run_prefix(onpress_payloads_prefix);
     break;
+  case toolbox::OnPressDomain::Plugins:
+  case toolbox::OnPressDomain::PluginConfig:
+    run_exact(onpress_plugins_exact);
+    break;
   case toolbox::OnPressDomain::Cheats:
     run_prefix(onpress_cheats_prefix);
     break;
@@ -72,6 +76,11 @@ OnPressResult dispatch_toolbox_press(toolbox::OnPressDomain domain,
     break;
   case toolbox::OnPressDomain::Plapps:
     run_prefix(onpress_packages_prefix);
+    break;
+  case toolbox::OnPressDomain::Progress:
+    break;
+  case toolbox::OnPressDomain::RemotePlay:
+    run_exact(onpress_network_exact);
     break;
   case toolbox::OnPressDomain::PassThrough:
     break;

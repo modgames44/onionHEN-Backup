@@ -3,7 +3,9 @@
 #include "daemon_ops.hpp"
 #include <onion/platform.h>
 #include <onion/proc_query.h>
+#include <onion/ready.h>
 #include <onion/ipc_server.hpp>
+#include <onion/system_tmp.h>
 #include <msg.hpp>
 #include <atomic>
 #include <string>
@@ -102,7 +104,7 @@ int change_permissions_recursive(const char* path) {
         size_t name_len = strlen(entry->d_name);
 
         if (path_len + name_len + 2 > PATH_MAX) {
-            LOG_INFO( "Path too long: %s/%s", path, entry->d_name);
+            LOG_ERROR("Path too long: %s/%s", path, entry->d_name);
             result = -1;
             continue;
         }
@@ -110,7 +112,7 @@ int change_permissions_recursive(const char* path) {
         char newpath[PATH_MAX];
         int ret = snprintf(newpath, sizeof(newpath), "%s/%s", path, entry->d_name);
         if (ret >= sizeof(newpath)) {
-            LOG_INFO( "Path truncated: %s/%s", path, entry->d_name);
+            LOG_ERROR("Path truncated: %s/%s", path, entry->d_name);
             result = -1;
             continue;
         }
@@ -139,7 +141,7 @@ int change_permissions_recursive(const char* path) {
 
 bool test_sb_file(const char *filename) {
   if (!filename) {
-    LOG_INFO("test_sb_file: filename is null");
+    LOG_ERROR("test_sb_file: filename is null");
     return false;
   }
 
@@ -186,7 +188,7 @@ bool test_sb_file(const char *filename) {
   }
 
   close(fd);
-  LOG_INFO("test_sb_file: Successfully sampled %s", filename);
+  LOG_DEBUG("test_sb_file: successfully sampled %s", filename);
   return true;
 }
 
@@ -253,7 +255,7 @@ void ForceKillProc(int pid) {
     return;
   }
   if (pid == getpid()) {
-    LOG_INFO("ForceKillProc: refusing self pid=%d", pid);
+    LOG_WARN("ForceKillProc: refusing self pid=%d", pid);
     return;
   }
 
@@ -277,34 +279,13 @@ void ForceKillProc(int pid) {
   set_proc_authid(getpid(), authid); // Restore original authid
 }
 
-/** Kill every live process whose ki_comm matches any of @names (substring). */
-static void kill_all_by_comm_substr(const char *const *names, size_t nnames) {
-  if (!names || nnames == 0)
+static void shutdown_owned_process(const char *label, pid_t pid) {
+  if (pid <= 1 || pid == getpid())
     return;
-  /* Loop: find+kill until none remain (bootstrapper kill_by_name pattern). */
-  for (int pass = 0; pass < 8; ++pass) {
-    bool any = false;
-    for (size_t i = 0; i < nnames; ++i) {
-      if (!names[i] || !names[i][0])
-        continue;
-      pid_t p = onion_find_pid(names[i]);
-      if (p <= 0)
-        p = onion_find_pid_substr(names[i]);
-      if (p <= 0 || p == getpid())
-        continue;
-      any = true;
-      LOG_INFO("shutdown: killing pid=%d (match \"%s\")", (int)p, names[i]);
-      /* ELF daemons often ignore TerminateProcess — SIGKILL first. */
-      if (kill(p, SIGKILL) != 0) {
-        LOG_ERROR("shutdown: SIGKILL pid=%d failed: %s", (int)p,
-                     strerror(errno));
-        ForceKillProc(static_cast<int>(p));
-      }
-      usleep(200 * 1000);
-    }
-    if (!any)
-      break;
-  }
+  LOG_INFO("shutdown: stopping owned %s pid=%d", label, static_cast<int>(pid));
+  if (kill(pid, SIGKILL) != 0 && errno != ESRCH)
+    ForceKillProc(static_cast<int>(pid));
+  usleep(200 * 1000);
 }
 
 static void shutdown_restart_shellui(void) {
@@ -329,11 +310,13 @@ static void shutdown_restart_shellui(void) {
  * half-torn fd/budget state (fdescfree BUDGET_FD_FILE) and panics. kstuff
  * stays until reboot.
  *
- * Order: util → SceShellUI (allowed) → this daemon exits.
+ * Order: util → private elfldr (:9020) → SceShellUI (allowed) → this daemon
+ * exits.
  */
 [[noreturn]] void cmd_shutdown_onion_stack(void) {
   LOG_INFO(
-      "cmd_shutdown_onion_stack: util → restart ShellUI → self (leave kstuff)");
+      "cmd_shutdown_onion_stack: util → elfldr(:9020) → restart ShellUI → self "
+      "(leave kstuff)");
 
   /*
    * Order matters: arm stack-shutdown first so the runtime supervisor will not
@@ -345,29 +328,19 @@ static void shutdown_restart_shellui(void) {
   /* Let fifo_and_dumper_thread observe the flag before util vanishes. */
   usleep(100 * 1000);
 
-  static const char *const kUtilNames[] = {
-      "onion_util.elf",
-      "util.elf",
-      "OnionHEN Utility",
-      "util",
-  };
+  LOG_INFO("shutdown[1/4]: stop util");
+  shutdown_owned_process("util", runtime_owned_util_pid());
+  onion_ready_clear(ONION_READY_UTIL);
 
-  LOG_INFO("shutdown[1/3]: stop util");
-  kill_all_by_comm_substr(kUtilNames,
-                          sizeof(kUtilNames) / sizeof(kUtilNames[0]));
-  if (onion_find_pid("onion_util.elf") > 0 ||
-      onion_find_pid_substr("onion_util.elf") > 0 ||
-      onion_find_pid("util.elf") > 0 || onion_find_pid_substr("util.elf") > 0 ||
-      onion_find_pid("OnionHEN Utility") > 0) {
-    LOG_WARN("shutdown: util still alive — retry");
-    kill_all_by_comm_substr(kUtilNames,
-                            sizeof(kUtilNames) / sizeof(kUtilNames[0]));
-  }
+  LOG_INFO("shutdown[2/4]: stop private elfldr (:9020)");
+  shutdown_owned_process("private elfldr", runtime_owned_private_loader_pid());
+  unlink(ONION_SYSTEM_TMP_ELFLDR_STATE);
+  unlink(ONION_SYSTEM_TMP_ELFLDR_BUSY);
 
-  LOG_INFO("shutdown[2/3]: restart SceShellUI");
+  LOG_INFO("shutdown[3/4]: restart SceShellUI");
   shutdown_restart_shellui();
 
-  LOG_INFO("shutdown[3/3]: exit daemon (kstuff intentionally left running)");
+  LOG_INFO("shutdown[4/4]: exit daemon (kstuff intentionally left running)");
   onion_notify(true, "notify.stack.shutdown");
   usleep(200 * 1000);
   exit(0);

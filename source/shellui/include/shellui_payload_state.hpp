@@ -13,3 +13,7 @@ pid_t shellui_payload_validate_pid(pid_t pid, const char *pid_path,
                                    const char *key);
 pid_t shellui_payload_resolve_recorded_pid(const char *key, char *pid_path,
                                            size_t pid_path_sz);
+
+inline bool shellui_payload_is_running(const char *key) {
+  return shellui_payload_resolve_recorded_pid(key, nullptr, 0) > 1;
+}

@@ -16,6 +16,9 @@ along with this program; see the file COPYING. If not, see
 
 #include "ipc.hpp"
 #include "cheats/cheat_service.hpp"
+#include "util_language.h"
+#include "util_toolbox.h"
+#include "service_facade.hpp"
 #include <onion/settings.hpp>
 #include <onion/log_settings.hpp>
 #include <onion/platform.h>
@@ -48,20 +51,16 @@ extern "C" {
   int sceKernelGetAppInfo(pid_t pid, app_info_t * info);
   int sceKernelGetProcessName(int pid, char * out);
   int _sceApplicationGetAppId(int pid, uint32_t * appId);
-  int sceSystemServiceParamGetInt(int param_id, int *value);
-
   // set_proc_authid / get_proc_by_pid: libonion_proc
 }
 
 extern bool is_handler_enabled;
 
 onion::SettingsStore g_settings;
+static bool g_services_initialized = false;
 void start_ip_thread(void);
-void patch_checker(bool rest_resume);
 void* IPC_loop(void* args);
 bool shellui_patch(void);
-
-extern atomic_bool no_network_rest_mode_action;
 
 jmp_buf g_catch_buf;
 uintptr_t kernel_base = 0;
@@ -77,6 +76,7 @@ void __stack_chk_fail(void) {
 }
 
 bool LoadSettings() {
+    const onion::Settings previous = g_settings.snapshot();
     onion::Settings s{};
     if (!onion::settings_load(&s)) {
         LOG_ERROR("config.ini missing; using defaults (path primary=%s)",
@@ -93,10 +93,21 @@ bool LoadSettings() {
     }
 
     g_settings.store(s);
-    int system_language = 1;
-    if (s.ui_lang == onion::kUiLanguageSystem)
-        (void)sceSystemServiceParamGetInt(1, &system_language);
-    onion_notify_apply_ui_language(s.ui_lang, system_language);
+    util_apply_ui_language(s.ui_lang);
+
+    if (!g_services_initialized) {
+        g_services_initialized = true;
+        if (s.ftp_autoload &&
+            !onion::services::ftpService().start(
+                static_cast<uint16_t>(s.ftp_port))) {
+            LOG_WARN("FTP autoload failed on TCP %d", s.ftp_port);
+        }
+    } else if (previous.ftp_port != s.ftp_port) {
+        if (!onion::services::ftpService().reconfigure(
+                static_cast<uint16_t>(s.ftp_port))) {
+            LOG_WARN("FTP port reconfigure failed on TCP %d", s.ftp_port);
+        }
+    }
     /* Missing file is not an error — defaults were applied. */
     return true;
 }
@@ -106,7 +117,6 @@ int main(void) {
     (void)syscall(SYS_thr_set_name, -1, "onion_util.elf");
 
     pthread_t ipc_server = 0;
-    char tmp_buf[200];
     
     sceNetCtlInit();
     sceUserServiceInitialize(NULL);
@@ -118,16 +128,19 @@ int main(void) {
     LOG_INFO("util daemon entered");
 
     if (setjmp(g_catch_buf) == 0)
-        LOG_INFO("jump has been set");
+        LOG_DEBUG("jump has been set");
     else
         onion_notify(true, "notify.crash.resolved");
 
-    LOG_INFO("Registering signal handler...");
+    LOG_DEBUG("Registering signal handler...");
     fault_handler_init(cleanup);
-    LOG_INFO("   Success!");
+    LOG_DEBUG("   Success!");
 
     payload_args_t* args = payload_get_args();
     kernel_base = args->kdata_base_addr;
+    /* Preserve the launch credential context for the SystemService query;
+       util keeps PTRACE_AUTHID for its remaining lifetime. */
+    (void)util_refresh_system_language();
     /* pt_* / code-cave require PTRACE_AUTHID (not DEBUG_AUTHID). */
     set_ucred_to_ptrace();
 
@@ -140,12 +153,12 @@ int main(void) {
     start_ip_thread();
     pthread_create(&ipc_server, NULL, IPC_loop, NULL);
     /* IPC thread is up — publish ready for bootstrapper/daemon consumers */
-    onion_ready_signal(ONION_READY_UTIL);
+    onion_ready_signal_pid(ONION_READY_UTIL, getpid());
 
     if (onion_ready_is_set(ONION_FLAG_UTIL_BOOTED)) {
         /* onion_util.elf restarted mid-session (crash recover / re-launch) — not rest. */
         LOG_WARN("util already booted once — toolbox reinject (not rest)");
-        patch_checker(/*rest_resume=*/false);
+        toolbox_reinject();
     }
     /* Mark that util completed cold start (typed flag; replaces util_first_boot file). */
     onion_ready_signal(ONION_FLAG_UTIL_BOOTED);
@@ -154,26 +167,6 @@ int main(void) {
     onion::cheats::CheatService::instance().ensureDir();
 
     for (;;) {
-        // Rest Mode: wait until network is back, then reinject toolbox if needed.
-        if (get_ip_address(&tmp_buf[0], sizeof(tmp_buf)) < 0) {
-            sleep(1);
-
-            bool fail1 = get_ip_address(&tmp_buf[0], sizeof(tmp_buf)) < 0;
-            if (!fail1)
-                continue;
-
-            sleep(2);
-
-            bool fail2 = get_ip_address(&tmp_buf[0], sizeof(tmp_buf)) < 0;
-            if (!fail2)
-                continue;
-
-            if (no_network_rest_mode_action) {
-                patch_checker(/*rest_resume=*/true);
-            }
-            continue;
-        }
-        no_network_rest_mode_action = false;
         sleep(1);
     }
 

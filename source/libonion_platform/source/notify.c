@@ -4,6 +4,8 @@
 #include <onion/notify_i18n.h>
 #include <onion/log.h>
 
+#include "cJSON.hpp"
+
 #include <stdarg.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -45,64 +47,6 @@ void onion_notify_set_rich_send(onion_notify_rich_send_fn fn) {
   g_rich_send = fn;
 }
 
-static void json_escape(char *out, size_t out_sz, const char *in) {
-  size_t j = 0;
-
-  if (out_sz == 0) {
-    return;
-  }
-  if (!in) {
-    in = "";
-  }
-
-  for (size_t i = 0; in[i] && j + 1 < out_sz; i++) {
-    const unsigned char c = (unsigned char)in[i];
-    const char *esc = NULL;
-
-    switch (c) {
-    case '\\':
-      esc = "\\\\";
-      break;
-    case '"':
-      esc = "\\\"";
-      break;
-    case '\b':
-      esc = "\\b";
-      break;
-    case '\f':
-      esc = "\\f";
-      break;
-    case '\n':
-      esc = "\\n";
-      break;
-    case '\r':
-      esc = "\\r";
-      break;
-    case '\t':
-      esc = "\\t";
-      break;
-    }
-
-    if (esc) {
-      const size_t len = strlen(esc);
-      if (j + len >= out_sz) {
-        break;
-      }
-      memcpy(out + j, esc, len);
-      j += len;
-    } else if (c < 0x20) {
-      if (j + 6 >= out_sz) {
-        break;
-      }
-      snprintf(out + j, out_sz - j, "\\u%04x", (unsigned int)c);
-      j += 6;
-    } else {
-      out[j++] = (char)c;
-    }
-  }
-  out[j] = '\0';
-}
-
 void onion_notify_format(char *out, size_t out_sz, int show_watermark,
                          const char *fmt, va_list ap) {
   char buff[3075];
@@ -135,12 +79,13 @@ static void onion_notify_send_request(OrbisNotificationRequest *req,
     req->uri[0] = '\0';
   }
 
-  LOG_INFO("Notify%s: %s", with_system_icon ? "" : "(debug)", req->message);
+  LOG_DEBUG("Notify%s: %s", with_system_icon ? "" : "(debug)",
+            req->message);
 
   if (!g_send) {
     /* Never fall back to a direct CALL of sceKernelSendNotificationRequest —
      * that symbol is a data pointer in shellui/fps injectees. */
-    LOG_INFO("Notify: send fn not registered (onion_notify_set_send)");
+    LOG_ERROR("Notify: send fn not registered (onion_notify_set_send)");
     return;
   }
   (void)g_send(0, req, sizeof(*req), 0);
@@ -179,78 +124,79 @@ void onion_notify_debug(const char *fmt, ...) {
 void onion_notify_rich(const char *message, const char *sub_message,
                        const char *icon_url, const char *preview_icon,
                        const char *notification_id) {
-  char msg[512];
-  char sub[512];
-  char icon[1024];
-  char preview[64];
-  char id[64];
-  char payload[4096];
-  int rc;
+  const char *msg = onion_notify_tr(message ? message : "notify.brand");
+  const char *sub = onion_notify_tr(sub_message ? sub_message : "");
+  const char *icon_url_value =
+      icon_url ? icon_url : "/user/data/OnionHEN/onionhen.png";
+  const char *preview_icon_value = preview_icon ? preview_icon : "download";
+  const char *notification_id_value =
+      notification_id ? notification_id : "588193127";
 
-  json_escape(msg, sizeof(msg),
-              onion_notify_tr(message ? message : "notify.brand"));
-  json_escape(sub, sizeof(sub),
-              onion_notify_tr(sub_message ? sub_message : ""));
-  json_escape(icon, sizeof(icon),
-              icon_url ? icon_url : "/user/data/OnionHEN/onionhen.png");
-  json_escape(preview, sizeof(preview),
-              preview_icon ? preview_icon : "download");
-  json_escape(id, sizeof(id), notification_id ? notification_id : "588193127");
+  cJSON *root = cJSON_CreateObject();
+  cJSON *raw = root ? cJSON_AddObjectToObject(root, "rawData") : NULL;
+  cJSON *view = raw ? cJSON_AddObjectToObject(raw, "viewData") : NULL;
+  cJSON *icon = view ? cJSON_AddObjectToObject(view, "icon") : NULL;
+  cJSON *icon_params =
+      icon ? cJSON_AddObjectToObject(icon, "parameters") : NULL;
+  cJSON *message_obj =
+      view ? cJSON_AddObjectToObject(view, "message") : NULL;
+  cJSON *sub_message_obj =
+      view ? cJSON_AddObjectToObject(view, "subMessage") : NULL;
+  cJSON *platform = raw ? cJSON_AddObjectToObject(raw, "platformViews") : NULL;
+  cJSON *preview =
+      platform ? cJSON_AddObjectToObject(platform, "previewDisabled") : NULL;
+  cJSON *preview_view =
+      preview ? cJSON_AddObjectToObject(preview, "viewData") : NULL;
+  cJSON *preview_icon_obj =
+      preview_view ? cJSON_AddObjectToObject(preview_view, "icon") : NULL;
+  cJSON *preview_icon_params = preview_icon_obj
+      ? cJSON_AddObjectToObject(preview_icon_obj, "parameters")
+      : NULL;
+  cJSON *preview_message =
+      preview_view ? cJSON_AddObjectToObject(preview_view, "message") : NULL;
 
-  rc = snprintf(
-      payload, sizeof(payload),
-      "{\n"
-      "  \"rawData\": {\n"
-      "    \"viewTemplateType\": \"InteractiveToastTemplateB\",\n"
-      "    \"channelType\": \"Downloads\",\n"
-      "    \"useCaseId\": \"IDC\",\n"
-      "    \"toastOverwriteType\": \"No\",\n"
-      "    \"isImmediate\": true,\n"
-      "    \"priority\": 100,\n"
-      "    \"viewData\": {\n"
-      "      \"icon\": {\n"
-      "        \"type\": \"Url\",\n"
-      "        \"parameters\": {\n"
-      "          \"url\": \"%s\"\n"
-      "        }\n"
-      "      },\n"
-      "      \"message\": {\n"
-      "        \"body\": \"%s\"\n"
-      "      },\n"
-      "      \"subMessage\": {\n"
-      "        \"body\": \"%s\"\n"
-      "      }\n"
-      "    },\n"
-      "    \"platformViews\": {\n"
-      "      \"previewDisabled\": {\n"
-      "        \"viewData\": {\n"
-      "          \"icon\": {\n"
-      "            \"type\": \"Predefined\",\n"
-      "            \"parameters\": {\n"
-      "              \"icon\": \"%s\"\n"
-      "            }\n"
-      "          },\n"
-      "          \"message\": {\n"
-      "            \"body\": \"%s\"\n"
-      "          }\n"
-      "        }\n"
-      "      }\n"
-      "    }\n"
-      "  },\n"
-      "  \"createdDateTime\": \"2025-12-14T03:14:51.473Z\",\n"
-      "  \"localNotificationId\": \"%s\"\n"
-      "}",
-      icon, msg, sub, preview, sub[0] ? sub : msg, id);
-  if (rc < 0 || (size_t)rc >= sizeof(payload)) {
-    LOG_INFO("Rich notify: payload too large");
+  if (!root || !raw || !view || !icon || !icon_params || !message_obj ||
+      !sub_message_obj || !platform || !preview || !preview_view ||
+      !preview_icon_obj || !preview_icon_params || !preview_message ||
+      !cJSON_AddStringToObject(raw, "viewTemplateType",
+                               "InteractiveToastTemplateB") ||
+      !cJSON_AddStringToObject(raw, "channelType", "Downloads") ||
+      !cJSON_AddStringToObject(raw, "useCaseId", "IDC") ||
+      !cJSON_AddStringToObject(raw, "toastOverwriteType", "No") ||
+      !cJSON_AddBoolToObject(raw, "isImmediate", 1) ||
+      !cJSON_AddNumberToObject(raw, "priority", 100) ||
+      !cJSON_AddStringToObject(icon, "type", "Url") ||
+      !cJSON_AddStringToObject(icon_params, "url", icon_url_value) ||
+      !cJSON_AddStringToObject(message_obj, "body", msg) ||
+      !cJSON_AddStringToObject(sub_message_obj, "body", sub) ||
+      !cJSON_AddStringToObject(preview_icon_obj, "type", "Predefined") ||
+      !cJSON_AddStringToObject(preview_icon_params, "icon",
+                               preview_icon_value) ||
+      !cJSON_AddStringToObject(preview_message, "body", sub[0] ? sub : msg) ||
+      !cJSON_AddStringToObject(root, "createdDateTime",
+                               "2025-12-14T03:14:51.473Z") ||
+      !cJSON_AddStringToObject(root, "localNotificationId",
+                               notification_id_value)) {
+    LOG_ERROR("Rich notify: failed to build payload");
+    cJSON_Delete(root);
     return;
   }
 
-  LOG_INFO("Rich notify: %s%s%s", msg, sub[0] ? " - " : "", sub);
+  char *payload = cJSON_Print(root);
+  cJSON_Delete(root);
+  if (!payload || strlen(payload) >= 4096) {
+    LOG_ERROR("Rich notify: payload too large");
+    cJSON_free(payload);
+    return;
+  }
+
+  LOG_DEBUG("Rich notify: %s%s%s", msg, sub[0] ? " - " : "", sub);
 
   if (!g_rich_send) {
-    LOG_INFO("Rich notify: send fn not registered");
+    LOG_ERROR("Rich notify: send fn not registered");
+    cJSON_free(payload);
     return;
   }
   (void)g_rich_send(0xFE, true, payload);
+  cJSON_free(payload);
 }

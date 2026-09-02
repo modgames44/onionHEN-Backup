@@ -23,7 +23,6 @@ along with this program; see the file COPYING. If not, see
 #include <errno.h>
 #include <strings.h>
 #include <sys/socket.h>
-#include <sys/un.h>
 #include <unistd.h>
 
 #include "onion_cjson.hpp"
@@ -38,10 +37,7 @@ OnionIpcNotifyFn g_notify = nullptr;
 
 
 std::string json_object_str(cJSON *j) {
-  onion_cjson::Printed printed(j);
-  std::string out = printed.str();
-  cJSON_Delete(j);
-  return out;
+  return onion_cjson::print_owned(j);
 }
 
 std::string json_kv_string(const char *k1, const char *v1) {
@@ -57,6 +53,14 @@ std::string json_kv_string2(const char *k1, const char *v1, const char *k2,
   cJSON_AddStringToObject(j, k2, v2 ? v2 : "");
   return json_object_str(j);
 }
+
+std::string json_kv_number(const char *key, double value) {
+  cJSON *j = cJSON_CreateObject();
+  cJSON_AddNumberToObject(j, key, value);
+  return json_object_str(j);
+}
+
+std::string json_empty_object() { return json_object_str(cJSON_CreateObject()); }
 
 void maybe_notify(const char *text) {
   if (g_notify && text) {
@@ -100,17 +104,8 @@ bool IPC_Client::require_crit(const char *what) const {
 }
 
 int IPC_Client::OpenConnection(const char *path) {
-  sockaddr_un server{};
-  int soc = socket(AF_UNIX, SOCK_STREAM, 0);
-  if (soc == -1) {
-    LOG_ERROR("Failed to create socket: %s", strerror(errno));
-    return -1;
-  }
-  server.sun_family = AF_UNIX;
-  strncpy(server.sun_path, path, sizeof(server.sun_path) - 1);
-  if (connect(soc, reinterpret_cast<struct sockaddr *>(&server),
-              SUN_LEN(&server)) == -1) {
-    close(soc);
+  const int soc = onion::ipc_unix_connect(path);
+  if (soc < 0) {
     LOG_ERROR("Failed to connect to %s: %s", path, strerror(errno));
     return -1;
   }
@@ -154,8 +149,9 @@ int IPC_Client::recv_frame_unlocked(IPCMessage &msg) {
   }
 
   struct timeval tv;
-  tv.tv_sec = recv_timeout_ms_ / 1000;
-  tv.tv_usec = (recv_timeout_ms_ % 1000) * 1000;
+  const int recv_timeout_ms = recv_timeout_ms_.load(std::memory_order_relaxed);
+  tv.tv_sec = recv_timeout_ms / 1000;
+  tv.tv_usec = (recv_timeout_ms % 1000) * 1000;
   if (setsockopt(socket_fd_, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) < 0) {
     return -1;
   }
@@ -183,32 +179,32 @@ int IPC_Client::IPCReceiveData(IPCMessage &msg, std::string &ipc_msg) {
   }
   LOG_DEBUG("Daemon returned: %i", msg.error);
 
-  if (msg.error != 0) {
-    LOG_ERROR("Daemon returned an error: %i", msg.error);
-    return msg.error;
+  const int reply_error = msg.error;
+  if (reply_error != 0) {
+    LOG_ERROR("Daemon returned an error: %i", reply_error);
   }
 
   if (strlen(msg.msg) <= 2) {
     LOG_DEBUG("Daemon message is empty");
-    return -1;
+    return reply_error != 0 ? reply_error : -1;
   }
 
   onion_cjson::Root j(msg.msg);
   if (!j) {
     LOG_ERROR("Failed to parse json: %s",
                 cJSON_GetErrorPtr() ? cJSON_GetErrorPtr() : "unknown error");
-    return -1;
+    return reply_error != 0 ? reply_error : -1;
   }
 
   const char *var = onion_cjson::string_item(j.get(), "var");
   if (!var) {
     LOG_DEBUG("Daemon message does not contain the return obj");
-    return -1;
+    return reply_error != 0 ? reply_error : -1;
   }
 
   ipc_msg = var;
   LOG_DEBUG("Daemon IPC return obj: %s", ipc_msg.c_str());
-  return msg.error;
+  return reply_error;
 }
 
 int IPC_Client::IPCSendData(const IPCMessage &msg) {
@@ -245,9 +241,9 @@ bool IPC_Client::IPCSendCommand(DaemonCommands cmd, std::string &ipc_msg1,
   } else if (ipc_msg2.empty()) {
     if (cmd == BREW_DAEMON_PID || cmd == BREW_UTIL_DAEMON_PID ||
         cmd == BREW_TEST_CONNECTION || cmd == BREW_UTIL_TEST_CONNECTION) {
-      json = "{\"pid\": 0 }";
+      json = json_kv_number("pid", 0);
     } else {
-      json = "{\"msg_1\": 0}";
+      json = json_kv_number("msg_1", 0);
     }
   } else {
     json = std::move(ipc_msg2);
@@ -296,13 +292,31 @@ int IPC_Client::GetDaemonPid() {
 
 IPC_Ret IPC_Client::ToggleSetting(DaemonCommands cmd, bool turn_on) {
   std::string ipc_msg;
-  std::string json = turn_on ? "{\"toggle\": 1}" : "{\"toggle\": 0}";
+  std::string json = json_kv_number("toggle", turn_on ? 1 : 0);
   if (!IPCSendCommand(cmd, ipc_msg, json)) {
     LOG_ERROR("Failed to toggle setting 0x%X (%d)", cmd, cmd);
     return IPC_Ret::OPERATION_FAILED;
   }
   LOG_DEBUG("Setting 0x%X (%d) toggled", cmd, cmd);
   return IPC_Ret::NO_ERROR;
+}
+
+bool IPC_Client::FtpStatus() {
+  std::string ipc_msg;
+  if (!IPCSendCommand(BREW_UTIL_FTP_STATUS, ipc_msg)) {
+    LOG_ERROR("Failed to query FTP service status");
+    return false;
+  }
+  return ipc_msg == "1" || ipc_msg == "true";
+}
+
+bool IPC_Client::RecoverFtp() {
+  std::string ipc_msg;
+  if (!IPCSendCommand(BREW_UTIL_RECOVER_FTP, ipc_msg)) {
+    LOG_ERROR("Failed to recover FTP service");
+    return false;
+  }
+  return true;
 }
 
 void IPC_Client::KillDaemon() {
@@ -387,12 +401,20 @@ bool IPC_Client::Remount(const char *src, const char *dest) {
 }
 
 bool IPC_Client::GetGameCheats(const std::string &tid, const std::string &ver,
-                               std::string &cheats) {
+                               std::string &cheats, int pid, int appid) {
   if (!require_util("GetGameCheats")) {
     return false;
   }
-  std::string json =
-      json_kv_string2("tid", tid.c_str(), "version", ver.c_str());
+  cJSON *request = cJSON_CreateObject();
+  cJSON_AddStringToObject(request, "tid", tid.c_str());
+  cJSON_AddStringToObject(request, "version", ver.c_str());
+  if (pid > 0) {
+    cJSON_AddNumberToObject(request, "pid", pid);
+  }
+  if (appid > 0) {
+    cJSON_AddNumberToObject(request, "appid", appid);
+  }
+  std::string json = json_object_str(request);
   if (!IPCSendCommand(BREW_UTIL_GET_GAME_CHEAT, cheats, json)) {
     LOG_ERROR("Failed to get cheats for %s", tid.c_str());
     return false;
@@ -419,15 +441,48 @@ bool IPC_Client::ToggleGameCheat(int pid, const std::string &tid,
   return true;
 }
 
-void IPC_Client::SendRestModeAction() {
-  if (!require_util("SendRestModeAction")) {
-    return;
+bool IPC_Client::DownloadCheats(const char *catalog, const char *mirror,
+                                std::string &out) {
+  if (!require_util("DownloadCheats")) {
+    return false;
   }
-  std::string ipc_msg;
-  std::string json;
-  if (!IPCSendCommand(BREW_UTIL_SHELLUI_ON_STANDBY, ipc_msg, json)) {
-    LOG_ERROR("Failed to send rest-mode action");
+  cJSON *j = cJSON_CreateObject();
+  if (catalog && catalog[0]) {
+    cJSON_AddStringToObject(j, "catalog", catalog);
   }
+  if (mirror && mirror[0]) {
+    cJSON_AddStringToObject(j, "mirror", mirror);
+  }
+  std::string json = json_object_str(j);
+  if (!IPCSendCommand(BREW_UTIL_DOWNLOAD_CHEATS, out, json)) {
+    LOG_ERROR("Failed to start cheat catalog download");
+    return false;
+  }
+  return true;
+}
+
+bool IPC_Client::CheatSyncStatus(std::string &out) {
+  if (!require_util("CheatSyncStatus")) {
+    return false;
+  }
+  if (!IPCSendCommand(BREW_UTIL_CHEAT_SYNC_STATUS, out,
+                      json_empty_object())) {
+    LOG_ERROR("Failed to query cheat sync status");
+    return false;
+  }
+  return true;
+}
+
+bool IPC_Client::CancelCheatSync(uint32_t task_id, std::string &out) {
+  if (!require_util("CancelCheatSync")) {
+    return false;
+  }
+  if (!IPCSendCommand(BREW_UTIL_CANCEL_CHEAT_SYNC, out,
+                      json_kv_number("task_id", task_id))) {
+    LOG_ERROR("Failed to cancel cheat sync");
+    return false;
+  }
+  return true;
 }
 
 void IPC_Client::Reload_Daemon_Settings() {
@@ -468,7 +523,7 @@ bool IPC_Client::EnableToolbox() {
   }
   std::string ipc_msg;
   // Historical payload titleId; daemon ignores body for enable path.
-  std::string json = R"({ "titleId": "ETAH00002" })";
+  std::string json = json_kv_string("titleId", "ETAH00002");
   if (!IPCSendCommand(BREW_ENABLE_TOOLBOX, ipc_msg, json)) {
     LOG_ERROR("EnableToolbox failed");
     return false;

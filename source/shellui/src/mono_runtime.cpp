@@ -7,10 +7,17 @@
 #include "external_symbols.hpp"
 #include "defs.h"
 #include "ipc.hpp" // shellui_log
+#include <atomic>
 #include <string>
 #include <cstring>
 #include <mutex>
 #include <unistd.h>
+
+namespace {
+
+std::atomic<bool> g_home_reload_pending{false};
+
+} // namespace
 
 MonoImage * getDLLimage(const char* dll_file){
   
@@ -384,4 +391,19 @@ void ReloadRNPSApp(const char* title_id){
     } else {
         LOG_ERROR("Failed to find reload method, not reloading scene");
     }
+}
+
+void shellui_request_home_reload(void) {
+  if (g_home_reload_pending.exchange(true, std::memory_order_acq_rel)) {
+    return;
+  }
+  LOG_DEBUG("queued NPXS40002 home reload for next UI tick");
+}
+
+void shellui_poll_home_reload(void) {
+  if (!g_home_reload_pending.exchange(false, std::memory_order_acq_rel)) {
+    return;
+  }
+  LOG_DEBUG("applying NPXS40002 home reload on UI thread");
+  ReloadRNPSApp("NPXS40002");
 }

@@ -18,6 +18,13 @@ IPC / main
        │         ├─ MdbgMemoryBackend
        │         └─ KdirectMemoryBackend  # MemoryBackendFactory
        └─ C helpers                       # utils / ShnExt crypto / flatten
+
+IPC DOWNLOAD_CHEATS
+  └─ onion::cheats::sync::CheatSyncService
+       ├─ CheatCatalogRegistry / ICheatCatalog
+       ├─ CheatMirrorFactory / ICheatMirror
+       ├─ IHttpTransport + miniz archive extractor
+       └─ CheatRepository::flattenInstallTree   # reuse
 ```
 
 ## Patterns
@@ -26,18 +33,22 @@ IPC / main
 |---------|--------|
 | Facade | `CheatService` |
 | Singleton | `CheatService::instance()` |
-| Strategy | `IMemoryBackend`, `ICheatParser` |
-| Factory | `MemoryBackendFactory`, `CheatParserFactory` |
+| Strategy | `IMemoryBackend`, `ICheatParser`, `ICheatCatalog`, `ICheatMirror` |
+| Factory | `MemoryBackendFactory`, `CheatParserFactory`, `CheatMirrorFactory` |
 | Adapter | `ShnExtCheatParser` |
 | RAII | `std::lock_guard` on service state |
 
 ## Formats / paths
 
 ```text
-/data/OnionHEN/cheats/<TITLE_ID>_<VERSION>.{json,shn,mc4,ShnExt}
+/data/OnionHEN/cheats/<TITLE_ID>_<VERSION>[_<PROCESS>][_<SOURCE_ID>].{json,shn,mc4,ShnExt}
 ```
 
-Priority: json → shn → mc4 → ShnExt. No KCF/WMDW.
+`PROCESS` and 8-hex `SOURCE_ID` are optional. `SOURCE_ID` identifies a
+physical source. Catalog install copies `json/`, `shn/`, and `mc4/` files
+into this directory with their original names. The repository returns all
+sources compatible with title/version/process; format priority only
+determines deterministic display order.
 
 ## Memory
 

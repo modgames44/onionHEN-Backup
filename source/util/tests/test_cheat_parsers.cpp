@@ -86,6 +86,30 @@ int test_parse_json_authors_alias_and_dedup() {
   return 0;
 }
 
+int test_parse_json_decodes_escaped_strings() {
+  const char *json =
+      R"({"process":"eboot.bin","name":"Game \u014d","mods":[{"name":"Quote \" and slash \\","description":"Line\nBreak","memory":[{"offset":"10","on":"AA","off":"BB"}]}],"credits":["A\u006cice"]})";
+  static onion_cheat_file_t file;
+
+  TEST_ASSERT_EQ_INT(0, load_buf("json", json, file));
+  TEST_ASSERT_STREQ("Game \u014d", file.name);
+  TEST_ASSERT_STREQ("Alice", file.authors[0]);
+  TEST_ASSERT_STREQ(R"(Quote " and slash \)", file.cheats[0].name);
+  TEST_ASSERT_STREQ("Line\nBreak", file.cheats[0].description);
+  onion_cheat_file_clear(&file);
+  return 0;
+}
+
+int test_parse_json_rejects_trailing_garbage() {
+  const char *json =
+      R"({"process":"eboot.bin","name":"Demo","mods":[]} trailing)";
+  static onion_cheat_file_t file;
+
+  TEST_ASSERT_EQ_INT(-1, load_buf("json", json, file));
+  onion_cheat_file_clear(&file);
+  return 0;
+}
+
 int test_parse_json_buffer_rejects_invalid_hex() {
   const char *json =
       "{"
@@ -160,6 +184,28 @@ int test_parse_xml_buffer_success() {
   return 0;
 }
 
+int test_parse_xml_unescapes_ampersand() {
+  const char *xml =
+      "<Trainer Process=\"eboot.bin\" Game=\"Ratchet &amp; Clank\" "
+      "Moder=\"Alice &amp; Bob\">"
+      "<Cheat Text=\"Inf Health &amp; Ammo\" Description=\"HP &amp; ammo\">"
+      "<Cheatline><Offset>10</Offset>"
+      "<ValueOn>AA</ValueOn><ValueOff>BB</ValueOff></Cheatline>"
+      "</Cheat>"
+      "</Trainer>";
+  static onion_cheat_file_t file;
+
+  TEST_ASSERT_EQ_INT(0, load_buf("shn", xml, file));
+  TEST_ASSERT_STREQ("Ratchet & Clank", file.name);
+  TEST_ASSERT_EQ_INT(1, static_cast<int>(file.author_count));
+  TEST_ASSERT_STREQ("Alice & Bob", file.authors[0]);
+  TEST_ASSERT_EQ_INT(1, static_cast<int>(file.cheat_count));
+  TEST_ASSERT_STREQ("Inf Health & Ammo", file.cheats[0].name);
+  TEST_ASSERT_STREQ("HP & ammo", file.cheats[0].description);
+  onion_cheat_file_clear(&file);
+  return 0;
+}
+
 int test_parse_xml_ignores_out_of_range_section() {
   const char *xml =
       "<Trainer Process=\"eboot.bin\" Game=\"Demo\">"
@@ -205,8 +251,7 @@ int test_fixture_json_file_loads() {
       0, onion_test_fixture_path("fixtures/cheats/PPSA26344_01.008.000.json",
                                  path, sizeof(path)));
   TEST_ASSERT_EQ_INT(0, load_path(path, file));
-  /* extract_string does not unescape JSON; keep raw \u014d sequence */
-  TEST_ASSERT_STREQ("Ghost of Y\\u014dtei", file.name);
+  TEST_ASSERT_STREQ("Ghost of Y\u014dtei", file.name);
   TEST_ASSERT_STREQ("eboot.bin", file.process);
   TEST_ASSERT_EQ_INT(1, static_cast<int>(file.author_count));
   TEST_ASSERT_STREQ("Yharnam", file.authors[0]);
@@ -327,12 +372,18 @@ extern "C" int test_cheat_parsers_suite(void) {
                              test_parse_json_buffer_success);
   failures += onion_test_run("cheat json authors alias and dedup",
                              test_parse_json_authors_alias_and_dedup);
+  failures += onion_test_run("cheat json decodes escaped strings",
+                             test_parse_json_decodes_escaped_strings);
+  failures += onion_test_run("cheat json rejects trailing garbage",
+                             test_parse_json_rejects_trailing_garbage);
   failures += onion_test_run("cheat json rejects invalid hex",
                              test_parse_json_buffer_rejects_invalid_hex);
   failures += onion_test_run("cheat json ignores out-of-range section",
                              test_parse_json_ignores_out_of_range_section);
   failures +=
       onion_test_run("cheat xml parse success", test_parse_xml_buffer_success);
+  failures += onion_test_run("cheat xml unescapes ampersand",
+                             test_parse_xml_unescapes_ampersand);
   failures += onion_test_run("cheat xml ignores out-of-range section",
                              test_parse_xml_ignores_out_of_range_section);
   failures +=

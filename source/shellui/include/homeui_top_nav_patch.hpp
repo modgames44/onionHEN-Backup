@@ -34,5 +34,3 @@ struct MonoImage;
 void patch_homeui_top_nav(unsigned char *buffer, int *size_ptr,
                           int buffer_capacity);
 void install_homeui_top_nav_hooks(MonoImage *react_pui);
-void shellui_request_homeui_top_nav_reload(void);
-void shellui_poll_homeui_top_nav_reload(void);

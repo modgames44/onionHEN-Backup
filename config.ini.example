@@ -37,15 +37,14 @@ show_title_ids=false
 # Available values: true, false
 show_onionhen_options=true
 
-[rest_mode]
-# resume_reinject_delay_seconds waits before Toolbox reinjection after resume.
-# Available values: 0 or a positive number of seconds.
-resume_reinject_delay_seconds=10
-
 [cheats]
 # memory_backend selects the cheat memory access implementation.
 # Available values: default, libhijacker
 memory_backend=default
+# mirror selects the git host for online cheat catalogs.
+# Available values: auto, github, cnb
+# auto uses cnb.cool when the UI/system language is zh-Hans, otherwise GitHub.
+mirror=auto
 
 [app_jailbreak]
 # enabled controls the App lifecycle and sandbox event listeners. When false,
@@ -80,6 +79,9 @@ background=true
 # edge chooses the screen edge used by the monitor bar.
 # Available values: top, bottom
 edge=top
+# align packs metrics to the left, center, or right of the bar.
+# Available values: left, center, right
+align=center
 # show_cpu displays CPU temperature and usage.
 # Available values: true, false
 show_cpu=true
@@ -89,6 +91,9 @@ cpu_usage_mode=average
 # show_gpu displays GPU temperature and usage.
 # Available values: true, false
 show_gpu=true
+# show_fps displays the skip-hook in-game frame rate.
+# Available values: true, false
+show_fps=true
 # show_memory displays memory usage.
 # Available values: true, false
 show_memory=true
@@ -108,3 +113,11 @@ toolbox=off
 # autoload loads kstuff when OnionHEN starts.
 # Available values: true, false
 autoload=true
+
+[ftp]
+# autoload starts the built-in FTP server the next time OnionHEN launches.
+# Available values: true, false
+autoload=false
+# port selects the TCP listen port for the built-in server.
+# Available values: 1 through 65535
+port=1337

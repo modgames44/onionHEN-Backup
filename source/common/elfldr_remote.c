@@ -6,6 +6,7 @@
 #include <fcntl.h>
 #include <limits.h>
 #include <netinet/in.h>
+#include <poll.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -16,6 +17,10 @@
 
 #ifndef MSG_NOSIGNAL
 #define MSG_NOSIGNAL 0x20000
+#endif
+
+#ifndef ELFLDR_CONNECT_TIMEOUT_MS
+#define ELFLDR_CONNECT_TIMEOUT_MS 2000
 #endif
 
 static int connect_port(uint16_t port) {
@@ -29,10 +34,40 @@ static int connect_port(uint16_t port) {
   addr.sin_port = htons(port);
   addr.sin_addr.s_addr = htonl(0x7f000001);
 
-  if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+  const int flags = fcntl(fd, F_GETFL, 0);
+  const int nonblock_ok =
+      flags >= 0 && fcntl(fd, F_SETFL, flags | O_NONBLOCK) == 0;
+  if (!nonblock_ok) {
+    if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+      close(fd);
+      return -1;
+    }
+    return fd;
+  }
+
+  const int rc = connect(fd, (struct sockaddr *)&addr, sizeof(addr));
+  if (rc < 0 && errno != EINPROGRESS) {
     close(fd);
     return -1;
   }
+  if (rc != 0) {
+    struct pollfd pfd;
+    memset(&pfd, 0, sizeof(pfd));
+    pfd.fd = fd;
+    pfd.events = POLLOUT;
+    if (poll(&pfd, 1, ELFLDR_CONNECT_TIMEOUT_MS) <= 0) {
+      close(fd);
+      return -1;
+    }
+    int err = 0;
+    socklen_t len = sizeof(err);
+    if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &len) < 0 || err != 0) {
+      close(fd);
+      return -1;
+    }
+  }
+
+  (void)fcntl(fd, F_SETFL, flags);
   return fd;
 }
 
@@ -115,13 +150,50 @@ bool elfldr_remote_send_bytes_to(uint16_t port, const uint8_t *elf,
   return true;
 }
 
-static int send_file_uri(uint16_t port, const char *abs_path) {
+static bool uri_encode_component(const char *input, char *out,
+                                 size_t out_size) {
+  static const char hex[] = "0123456789ABCDEF";
+  size_t used = 0;
+  if (!out || out_size == 0)
+    return false;
+  if (!input)
+    input = "";
+
+  for (const unsigned char *p = (const unsigned char *)input; *p; ++p) {
+    const bool safe = (*p >= 'a' && *p <= 'z') ||
+                      (*p >= 'A' && *p <= 'Z') ||
+                      (*p >= '0' && *p <= '9') || *p == '-' || *p == '_' ||
+                      *p == '.' || *p == '~';
+    const size_t needed = safe ? 1u : 3u;
+    if (used + needed >= out_size)
+      return false;
+    if (safe) {
+      out[used++] = (char)*p;
+    } else {
+      out[used++] = '%';
+      out[used++] = hex[*p >> 4];
+      out[used++] = hex[*p & 0x0f];
+    }
+  }
+  out[used] = '\0';
+  return true;
+}
+
+static int send_file_uri(uint16_t port, const char *abs_path,
+                         const char *args) {
   if (!abs_path || abs_path[0] != '/')
     return -1;
 
   /* socksrv: magic starts with "file" (0x656C6966 LE) then path until \n */
-  char line[768];
-  int n = snprintf(line, sizeof(line), "file:%s\n", abs_path);
+  char encoded_args[768];
+  if (!uri_encode_component(args, encoded_args, sizeof(encoded_args)))
+    return -1;
+
+  char line[1280];
+  int n = args && args[0]
+              ? snprintf(line, sizeof(line), "file:%s?args=%s\n", abs_path,
+                         encoded_args)
+              : snprintf(line, sizeof(line), "file:%s\n", abs_path);
   if (n <= 0 || (size_t)n >= sizeof(line))
     return -1;
 
@@ -184,9 +256,22 @@ static void mkdir_parent(const char *abs_path) {
   mkdir(tmp, 0777);
 }
 
-pid_t elfldr_remote_onion_write_and_launch_get_pid(const char *abs_path,
-                                                   const uint8_t *elf,
-                                                   size_t size) {
+pid_t elfldr_remote_onion_launch_file_get_pid(const char *abs_path,
+                                              const char *args) {
+  if (!abs_path || abs_path[0] != '/')
+    return -1;
+
+  int fd = send_file_uri(ONION_ELFLDR_PORT, abs_path, args);
+  if (fd < 0)
+    return -1;
+
+  const pid_t pid = read_pid_response(fd);
+  close(fd);
+  return pid;
+}
+
+pid_t elfldr_remote_onion_write_and_launch_get_pid_with_args(
+    const char *abs_path, const uint8_t *elf, size_t size, const char *args) {
   if (!abs_path || !elf || size < 4)
     return -1;
 
@@ -207,11 +292,12 @@ pid_t elfldr_remote_onion_write_and_launch_get_pid(const char *abs_path,
   }
   close(out);
 
-  int fd = send_file_uri(ONION_ELFLDR_PORT, abs_path);
-  if (fd < 0)
-    return -1;
+  return elfldr_remote_onion_launch_file_get_pid(abs_path, args);
+}
 
-  const pid_t pid = read_pid_response(fd);
-  close(fd);
-  return pid;
+pid_t elfldr_remote_onion_write_and_launch_get_pid(const char *abs_path,
+                                                   const uint8_t *elf,
+                                                   size_t size) {
+  return elfldr_remote_onion_write_and_launch_get_pid_with_args(
+      abs_path, elf, size, NULL);
 }

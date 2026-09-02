@@ -75,6 +75,36 @@ constexpr const char *kJailbreakReqNames[] = {
     "etahen_jailbreak",
     "onionhen_jailbreak",
 };
+constexpr const char *kShellUiTitleId = "NPXS40087";
+constexpr const char *kShellUiProcessName = "SceShellUI";
+
+struct ExecIdentity {
+  char process_name[64] {};
+  int name_rc = -1;
+  app_info_t info {};
+  int app_info_rc = -1;
+  std::string tid;
+};
+
+ExecIdentity read_exec_identity(pid_t pid) {
+  ExecIdentity id;
+  id.name_rc = sceKernelGetProcessName(pid, id.process_name);
+  id.app_info_rc = sceKernelGetAppInfo(pid, &id.info);
+  if (id.app_info_rc == 0) {
+    char title_id[sizeof(id.info.title_id) + 1] = {};
+    memcpy(title_id, id.info.title_id, sizeof(id.info.title_id));
+    id.tid = title_id;
+  }
+  return id;
+}
+
+bool identity_is_shellui(const ExecIdentity &id) {
+  if (id.name_rc == 0 &&
+      std::strcmp(id.process_name, kShellUiProcessName) == 0) {
+    return true;
+  }
+  return id.app_info_rc == 0 && id.tid == kShellUiTitleId;
+}
 
 bool is_whitelisted_app(const std::string &tid,
                         const onion::AppJailbreakAllowlist &allowlist) {
@@ -108,7 +138,7 @@ bool jb_apply_privileges(pid_t pid, bool escape_sandbox) {
 
   const intptr_t kproc = kernel_get_proc(pid);
   if (kproc == 0) {
-    LOG_INFO("[JB] kernel_get_proc(%d)=0 (ALLPROC=0x%lx rootvnode=0x%lx)",
+    LOG_DEBUG("[JB] kernel_get_proc(%d)=0 (ALLPROC=0x%lx rootvnode=0x%lx)",
              static_cast<int>(pid),
              static_cast<unsigned long>(KERNEL_ADDRESS_ALLPROC),
              static_cast<unsigned long>(KERNEL_ADDRESS_ROOTVNODE));
@@ -317,13 +347,9 @@ private:
     active_apps_.clear();
     settings_ = g_settings.snapshot();
 
-    const bool enabled =
+    const bool jb_enabled =
         jb_listener_enabled.load(std::memory_order_acquire) &&
         settings_.app_jailbreak_enabled;
-    if (!enabled) {
-      LOG_INFO("[JB] event listener idle (App jailbreak disabled)");
-      return true;
-    }
 
     syscore_pid_ = onion_find_pid("SceSysCore.elf");
     if (syscore_pid_ <= 0) {
@@ -343,8 +369,8 @@ private:
     }
 
     LOG_INFO("[JB] event listener active: SceSysCore pid=%d, "
-             "fflags=NOTE_FORK|NOTE_EXEC|NOTE_TRACK, no polling/fallback",
-             static_cast<int>(syscore_pid_));
+             "fflags=NOTE_FORK|NOTE_EXEC|NOTE_TRACK, jailbreak=%s",
+             static_cast<int>(syscore_pid_), jb_enabled ? "on" : "off");
     return true;
   }
 
@@ -357,16 +383,27 @@ private:
   void handle_process_event(const struct kevent &event) {
     const pid_t pid = static_cast<pid_t>(event.ident);
 
-    LOG_INFO("[JB][diag] proc event pid=%d fflags=0x%x data=%lld flags=0x%x",
-             static_cast<int>(pid), event.fflags,
-             static_cast<long long>(event.data), event.flags);
+    LOG_TRACE("[JB][diag] proc event pid=%d fflags=0x%x data=%lld flags=0x%x",
+              static_cast<int>(pid), event.fflags,
+              static_cast<long long>(event.data), event.flags);
 
     if (event.fflags & NOTE_TRACKERR) {
       LOG_ERROR("[JB][diag] NOTE_TRACKERR pid=%d parent=%lld; no fallback",
                 static_cast<int>(pid), static_cast<long long>(event.data));
     }
     if (event.fflags & NOTE_EXEC) {
-      inspect_app_process(pid, "exec");
+      const ExecIdentity id = read_exec_identity(pid);
+      if (identity_is_shellui(id)) {
+        LOG_DEBUG("[JB] SysCore EXEC SceShellUI pid=%d name='%s' tid='%s'",
+                  static_cast<int>(pid), id.process_name, id.tid.c_str());
+        toolbox_on_new_shellui(pid);
+      }
+      const bool jb_enabled =
+          jb_listener_enabled.load(std::memory_order_acquire) &&
+          settings_.app_jailbreak_enabled;
+      if (jb_enabled) {
+        inspect_app_process(pid, "exec", id);
+      }
     }
     if (event.fflags & NOTE_EXIT) {
       if (pid == syscore_pid_) {
@@ -378,34 +415,29 @@ private:
     }
   }
 
-  void inspect_app_process(pid_t pid, const char *source) {
+  void inspect_app_process(pid_t pid, const char *source,
+                           const ExecIdentity &id) {
     if (pid <= 1 || pid_to_tid_.find(pid) != pid_to_tid_.end()) {
       return;
     }
 
-    char process_name[64] = {};
-    const int name_rc = sceKernelGetProcessName(pid, process_name);
-    app_info_t info {};
-    const int app_info_rc = sceKernelGetAppInfo(pid, &info);
-    if (app_info_rc != 0) {
-      LOG_INFO("[JB][diag] %s pid=%d name_rc=%d name='%s' "
-               "GetAppInfo rc=%d errno=%d",
-               source, static_cast<int>(pid), name_rc, process_name,
-               app_info_rc, errno);
+    if (id.app_info_rc != 0) {
+      LOG_TRACE("[JB][diag] %s pid=%d name_rc=%d name='%s' "
+                "GetAppInfo rc=%d errno=%d",
+                source, static_cast<int>(pid), id.name_rc, id.process_name,
+                id.app_info_rc, errno);
       return;
     }
-    char title_id[sizeof(info.title_id) + 1] = {};
-    memcpy(title_id, info.title_id, sizeof(info.title_id));
-    const std::string tid(title_id);
+    const std::string &tid = id.tid;
     const bool whitelisted =
         !tid.empty() &&
         is_whitelisted_app(tid, settings_.app_jailbreak_allowlist);
-    LOG_INFO("[JB][diag] %s pid=%d name_rc=%d name='%s' appid=%u "
-             "tid='%s' whitelist=%s",
-             source, static_cast<int>(pid), name_rc, process_name, info.app_id,
-             tid.c_str(),
-             onion::app_jailbreak::whitelist_reason(
-                 tid, settings_.app_jailbreak_allowlist));
+    LOG_TRACE("[JB][diag] %s pid=%d name_rc=%d name='%s' appid=%u "
+              "tid='%s' whitelist=%s",
+              source, static_cast<int>(pid), id.name_rc, id.process_name,
+              id.info.app_id, tid.c_str(),
+              onion::app_jailbreak::whitelist_reason(
+                  tid, settings_.app_jailbreak_allowlist));
     if (!whitelisted) {
       return;
     }
@@ -421,12 +453,12 @@ private:
 
     TrackedApp &app = active_apps_[tid];
     const bool first_process = app.pids.empty();
-    app.app_id = info.app_id;
+    app.app_id = id.info.app_id;
     app.pids.insert(pid);
     pid_to_tid_[pid] = tid;
 
     LOG_INFO("[JB] allowed App %s pid=%d tid=%s appid=%u whitelist=%s",
-             source, static_cast<int>(pid), tid.c_str(), info.app_id,
+             source, static_cast<int>(pid), tid.c_str(), id.info.app_id,
              onion::app_jailbreak::whitelist_reason(
                  tid, settings_.app_jailbreak_allowlist));
 
@@ -500,9 +532,9 @@ private:
     vnode_watches_.emplace(
         fd, VnodeWatch{fd, kind, path, tid, slot_path});
     path_to_fd_.emplace(path, fd);
-    LOG_INFO("[JB][diag] vnode watch added kind=%s fd=%d path=%s tid=%s",
-             watch_kind_name(kind), fd, path.c_str(),
-             tid.empty() ? "-" : tid.c_str());
+    LOG_DEBUG("[JB][diag] vnode watch added kind=%s fd=%d path=%s tid=%s",
+              watch_kind_name(kind), fd, path.c_str(),
+              tid.empty() ? "-" : tid.c_str());
     return true;
   }
 
@@ -561,7 +593,7 @@ private:
       return;
     }
 
-    LOG_INFO("[JB][diag] sandbox root absent; watching %s", kMountRoot);
+    LOG_DEBUG("[JB][diag] sandbox root absent; watching %s", kMountRoot);
     remove_watch_tree(kSandboxRoot);
     if (!add_vnode_watch(WatchKind::MountRoot, kMountRoot)) {
       LOG_ERROR("[JB] cannot watch %s while waiting for sandbox root: %s",
@@ -582,8 +614,8 @@ private:
   void discover_slots(const std::string &tid) {
     if (active_apps_.find(tid) == active_apps_.end() ||
         !path_is_directory(kSandboxRoot)) {
-      LOG_INFO("[JB][diag] slot discovery deferred tid=%s sandbox_root=%d",
-               tid.c_str(), path_is_directory(kSandboxRoot) ? 1 : 0);
+      LOG_DEBUG("[JB][diag] slot discovery deferred tid=%s sandbox_root=%d",
+                tid.c_str(), path_is_directory(kSandboxRoot) ? 1 : 0);
       return;
     }
 
@@ -597,14 +629,14 @@ private:
         continue;
       }
       ++found;
-      LOG_INFO("[JB][diag] sandbox slot found tid=%s slot=%03d path=%s",
-               tid.c_str(), slot, slot_path.c_str());
+      LOG_TRACE("[JB][diag] sandbox slot found tid=%s slot=%03d path=%s",
+                tid.c_str(), slot, slot_path.c_str());
       (void)add_vnode_watch(WatchKind::SlotDirectory, slot_path, tid,
                             slot_path);
       ensure_download_watch(tid, slot_path);
     }
-    LOG_INFO("[JB][diag] slot discovery complete tid=%s checked=51 found=%d",
-             tid.c_str(), found);
+    LOG_DEBUG("[JB][diag] slot discovery complete tid=%s checked=51 found=%d",
+              tid.c_str(), found);
   }
 
   void ensure_download_watch(const std::string &tid,
@@ -639,7 +671,7 @@ private:
         continue;
       }
       const int request_fd = path_to_fd_[request_path];
-      LOG_INFO("[JB] request file discovered: %s", request_path.c_str());
+      LOG_DEBUG("[JB] request file discovered: %s", request_path.c_str());
       if (process_request(request_fd, 0)) {
         remove_vnode_watch(request_fd);
       }
@@ -655,9 +687,9 @@ private:
     const VnodeWatch watch = it->second;
     const bool invalidated =
         (event.fflags & (NOTE_DELETE | NOTE_RENAME | NOTE_REVOKE)) != 0;
-    LOG_INFO("[JB][diag] vnode event kind=%s fd=%d fflags=0x%x path=%s",
-             watch_kind_name(watch.kind), fd, event.fflags,
-             watch.path.c_str());
+    LOG_TRACE("[JB][diag] vnode event kind=%s fd=%d fflags=0x%x path=%s",
+              watch_kind_name(watch.kind), fd, event.fflags,
+              watch.path.c_str());
 
     switch (watch.kind) {
     case WatchKind::MountRoot:
@@ -763,7 +795,7 @@ private:
                 strerror(errno));
       return false;
     } else {
-      LOG_INFO("[JB] cleared request file %s", path.c_str());
+      LOG_DEBUG("[JB] cleared request file %s", path.c_str());
     }
     return true;
   }
@@ -807,8 +839,8 @@ private:
         !current.app_jailbreak_enabled ||
         active_apps_.find(tid) == active_apps_.end() ||
         !is_whitelisted_app(tid, current.app_jailbreak_allowlist)) {
-      LOG_INFO("[JB] request deferred because App jailbreak is inactive: %s",
-               path.c_str());
+      LOG_DEBUG("[JB] request deferred because App jailbreak is inactive: %s",
+                path.c_str());
       return false;
     }
 
@@ -825,15 +857,15 @@ private:
 
     const int uid_before = jb_read_uid(target_pid);
     const uint64_t auth_before = jb_read_authid(target_pid);
-    LOG_INFO("[JB] request pid=%d tid=%s pre-jb uid=%d authid=0x%llx",
-             static_cast<int>(target_pid), tid.c_str(), uid_before,
-             static_cast<unsigned long long>(auth_before));
+    LOG_DEBUG("[JB] request pid=%d tid=%s pre-jb uid=%d authid=0x%llx",
+              static_cast<int>(target_pid), tid.c_str(), uid_before,
+              static_cast<unsigned long long>(auth_before));
 
     bool ok = false;
     for (int attempt = 1; attempt <= kProcResolveAttempts && !ok; ++attempt) {
       if (kernel_get_proc(target_pid) == 0) {
-        LOG_INFO("[JB] kernel_get_proc(%d)=0 attempt=%d/%d",
-                 static_cast<int>(target_pid), attempt, kProcResolveAttempts);
+        LOG_DEBUG("[JB] kernel_get_proc(%d)=0 attempt=%d/%d",
+                  static_cast<int>(target_pid), attempt, kProcResolveAttempts);
         if (!isProcessAlive(target_pid)) {
           break;
         }
@@ -843,8 +875,8 @@ private:
         continue;
       }
       if (!jb_listener_enabled.load(std::memory_order_acquire)) {
-        LOG_INFO("[JB] listener disabled before privilege apply; deferring %s",
-                 path.c_str());
+        LOG_DEBUG("[JB] listener disabled before privilege apply; deferring %s",
+                  path.c_str());
         return false;
       }
       ok = jb_apply_privileges(target_pid, /*escape_sandbox=*/true);
@@ -853,11 +885,11 @@ private:
 
     const int uid_after = jb_read_uid(target_pid);
     const uint64_t auth_after = jb_read_authid(target_pid);
-    LOG_INFO("[JB] post-jb pid=%d uid=%d (was %d) authid=0x%llx "
-             "(was 0x%llx) ok=%d",
-             static_cast<int>(target_pid), uid_after, uid_before,
-             static_cast<unsigned long long>(auth_after),
-             static_cast<unsigned long long>(auth_before), ok ? 1 : 0);
+    LOG_DEBUG("[JB] post-jb pid=%d uid=%d (was %d) authid=0x%llx "
+              "(was 0x%llx) ok=%d",
+              static_cast<int>(target_pid), uid_after, uid_before,
+              static_cast<unsigned long long>(auth_after),
+              static_cast<unsigned long long>(auth_before), ok ? 1 : 0);
 
     if (ok && uid_after == 0) {
       if (current.debug_app_jb_msg) {
@@ -933,9 +965,9 @@ void *fifo_and_dumper_thread(void *args) noexcept {
   pthread_mutex_unlock(&jb_control_lock);
 
   LOG_INFO("[JB] worker started (SceSysCore lifecycle + sandbox vnode events)");
-  LOG_INFO("[JB] kernel symbols: ALLPROC=0x%lx ROOTVNODE=0x%lx",
-           static_cast<unsigned long>(KERNEL_ADDRESS_ALLPROC),
-           static_cast<unsigned long>(KERNEL_ADDRESS_ROOTVNODE));
+  LOG_DEBUG("[JB] kernel symbols: ALLPROC=0x%lx ROOTVNODE=0x%lx",
+            static_cast<unsigned long>(KERNEL_ADDRESS_ALLPROC),
+            static_cast<unsigned long>(KERNEL_ADDRESS_ROOTVNODE));
 
   {
     JailbreakEventLoop loop(control_pipe[0]);

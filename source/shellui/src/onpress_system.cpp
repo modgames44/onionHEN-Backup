@@ -105,11 +105,6 @@ static OnPressResult id_ui_lang(OnPressContext &ctx) {
   return OnPressResult::Handled;
 }
 
-static OnPressResult id_rest_1(OnPressContext &ctx) {
-  g_settings.rest_mode_delay_seconds = atol(ctx.value.c_str());
-  return OnPressResult::Handled;
-}
-
 static OnPressResult id_enable_fan_speed(OnPressContext &ctx) {
   if (atol(ctx.value.c_str()) == g_settings.enable_fan_speed) {
     LOG_WARN("Fan speed control already %s",
@@ -132,6 +127,26 @@ static OnPressResult id_fan_speed(OnPressContext &ctx) {
   LOG_DEBUG("Setting fan speed to %d%%", fan_speed);
   IPC_Client::getInstance(false).Set_Fan_Threshold(fan_speed,
                                                    g_settings.enable_fan_speed);
+  return OnPressResult::Handled;
+}
+
+static OnPressResult id_cheats_mirror(OnPressContext &ctx) {
+  char *end = nullptr;
+  const long selected = std::strtol(ctx.value.c_str(), &end, 10);
+  if (end == ctx.value.c_str() || *end != '\0' ||
+      (selected != onion::kCheatsMirrorAuto &&
+       selected != onion::kCheatsMirrorGithub &&
+       selected != onion::kCheatsMirrorCnb)) {
+    LOG_WARN("Rejected unsupported cheats mirror: %s", ctx.value.c_str());
+    return OnPressResult::EarlyReturn;
+  }
+  const int mirror = static_cast<int>(selected);
+  if (mirror == g_settings.cheats_mirror) {
+    return OnPressResult::EarlyReturn;
+  }
+  g_settings.cheats_mirror = mirror;
+  ctx.reload_util = true;
+  LOG_INFO("Cheats mirror: %d", mirror);
   return OnPressResult::Handled;
 }
 
@@ -185,9 +200,9 @@ static const OnPressExactEntry kExact[] = {
     {"id_debug_jb", id_debug_jb},
     {"id_custom_game_opts", id_custom_game_opts},
     {"id_ui_lang", id_ui_lang},
-    {"id_rest_1", id_rest_1},
     {"id_enable_fan_speed", id_enable_fan_speed},
     {"id_fan_speed", id_fan_speed},
+    {"id_cheats_mirror", id_cheats_mirror},
     {"id_cheats_shortcut", id_cheats_shortcut},
     {"id_toolbox_shortcut", id_toolbox_shortcut},
 };

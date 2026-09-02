@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Sync / build external dependencies for OnionHEN.
 #
-# Remaining external embeds: kstuff.elf
-# Built from source: onion_elfldr.elf (private 9020 runtime loader)
+# Embedded payload input: kstuff.elf
+# Also built from source: onion_elfldr.elf (private 9020 runtime loader)
 # Removed: external elfldr.elf (9021 service), ps5debug, ps5-app-dumper, Byepervisor/hen.bin
 #
 set -euo pipefail
@@ -18,6 +18,7 @@ INIT_SUBMODULES=0
 FORCE_DOWNLOAD=0
 
 KSTUFF_URL="https://github.com/EchoStretch/kstuff-lite/releases/download/v1.10/kstuff.elf"
+KSTUFF_SOURCE_DIR="${TP}/kstuff-lite"
 # Real release blob is hundreds of KB+; stubs are tiny markers.
 KSTUFF_MIN_BYTES=65536
 
@@ -32,6 +33,7 @@ Sync OnionHEN external dependencies from open-source upstreams.
 
 Submodules (under third_party/):
   kstuff-lite      https://github.com/EchoStretch/kstuff-lite
+  ftpsrv           compiled from the pinned source directly into util
 
 Runtime-only external dependency:
   elfldr @ 9021    https://github.com/ps5-payload-dev/elfldr
@@ -43,9 +45,9 @@ Removed from OnionHEN (not synced):
 
 Options:
   --init-submodules   git submodule update --init --recursive
-  --from-source       Prefer building submodules with make (needs SDK)
+  --from-source       Require source checkouts; disable release fallbacks
   --stub-missing      Write tiny placeholders if download/build fails
-  --force             Re-download/rebuild even if kstuff.elf already present
+  --force             Re-download/rebuild external dependencies
   -h, --help
 EOF
 }
@@ -79,6 +81,28 @@ place() {
   mkdir -p "$(dirname "${dest}")"
   cp -f "${src}" "${dest}"
   ok "$(basename "${dest}") <- ${src}"
+}
+
+file_sha256() {
+  local path="$1"
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "${path}" | awk '{print $1}'
+  else
+    shasum -a 256 "${path}" | awk '{print $1}'
+  fi
+}
+
+download_verified() {
+  local url="$1" dest="$2" expected="$3"
+  if ! download "${url}" "${dest}"; then
+    return 1
+  fi
+  if [[ "$(file_sha256 "${dest}")" != "${expected}" ]]; then
+    warn "checksum mismatch for $(basename "${dest}")"
+    rm -f "${dest}"
+    return 1
+  fi
+  return 0
 }
 
 stub() {
@@ -135,16 +159,16 @@ sync_kstuff() {
     warn "download failed, trying submodule build"
   fi
 
-  if [[ -d "${TP}/kstuff-lite" ]]; then
+  if [[ -d "${KSTUFF_SOURCE_DIR}" ]]; then
     need_sdk
     log "kstuff: build third_party/kstuff-lite (best-effort)"
-    if [[ -x "${TP}/kstuff-lite/ci-ps5-kstuff-ldr.sh" ]]; then
-      (cd "${TP}/kstuff-lite" && bash ./ci-ps5-kstuff-ldr.sh) || true
-    elif [[ -f "${TP}/kstuff-lite/Makefile" ]]; then
-      make -C "${TP}/kstuff-lite" -j4 || true
+    if [[ -x "${KSTUFF_SOURCE_DIR}/ci-ps5-kstuff-ldr.sh" ]]; then
+      (cd "${KSTUFF_SOURCE_DIR}" && bash ./ci-ps5-kstuff-ldr.sh) || true
+    elif [[ -f "${KSTUFF_SOURCE_DIR}/Makefile" ]]; then
+      make -C "${KSTUFF_SOURCE_DIR}" -j4 || true
     fi
     local found
-    found="$(find "${TP}/kstuff-lite" -name 'kstuff.elf' 2>/dev/null | head -1 || true)"
+    found="$(find "${KSTUFF_SOURCE_DIR}" -name 'kstuff.elf' 2>/dev/null | head -1 || true)"
     if [[ -n "${found}" ]]; then
       place "${found}" "${dest}"
       return 0
@@ -169,7 +193,7 @@ main() {
     init_submodules
   elif [[ ! -d "${TP}/kstuff-lite" ]]; then
     warn "submodules not checked out — run: git submodule update --init --recursive"
-    warn "release downloads still work without submodules"
+    warn "kstuff release downloads still work without submodules"
   fi
 
   sync_kstuff

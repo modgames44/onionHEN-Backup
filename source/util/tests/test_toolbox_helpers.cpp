@@ -39,6 +39,8 @@ static int test_payload_name_accept(void) {
   TEST_ASSERT_TRUE(is_payload_elf_name("bar.elf"));
   TEST_ASSERT_TRUE(is_payload_elf_name("CUSA12345.elf"));
   TEST_ASSERT_TRUE(is_payload_elf_name("x.elf"));
+  TEST_ASSERT_TRUE(is_payload_elf_name("ftpsrv.elf"));
+  TEST_ASSERT_TRUE(is_payload_elf_name("FTPSRV-PS5.elf"));
   return 0;
 }
 

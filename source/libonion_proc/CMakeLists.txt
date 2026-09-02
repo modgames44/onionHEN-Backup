@@ -7,6 +7,7 @@ add_library(${PROJECT_NAME} STATIC
   source/proc.cpp
   source/ucred.cpp
   source/proc_query.cpp
+  source/proc_dmap.cpp
 )
 set_target_properties(${PROJECT_NAME} PROPERTIES OUTPUT_NAME "${PROJECT_NAME}")
 set(CMAKE_C_FLAGS "${ONION_PS5_TARGET_FLAGS_MARCH} -fPIC -fstack-protector-all")

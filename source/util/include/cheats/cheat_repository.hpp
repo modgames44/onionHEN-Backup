@@ -2,8 +2,10 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 #include "cheats/cheat_engine.h"
+#include "cheats/runtime.h"
 #include "util_platform.h"
 
 namespace onion::cheats {
@@ -34,14 +36,14 @@ struct FileSignature {
  */
 class CheatRepository {
 public:
-  /**
-   * Resolve an existing cheat file for title+version.
-   *
-   * Standard names are preferred. A bounded compatibility lookup accepts
-   * website-specific suffixes after the version when they represent the
-   * legacy eboot scope.
-   */
+  /** Resolve the best compatible source for title/version/process. */
   static std::string resolvePath(const game_context_t &game);
+
+  /**
+   * Resolve every compatible physical source. The returned paths are stable
+   * and ordered by process scope, generic scope, extension, then filename.
+   */
+  static std::vector<std::string> resolvePaths(const game_context_t &game);
 
   static bool fileExists(const std::string &path);
   static bool statSignature(const std::string &path, FileSignature &out);
@@ -50,8 +52,12 @@ public:
   static int loadFile(const std::string &path, onion_cheat_file_t &out);
 
   static void ensureCheatsDir();
-  /** Flatten nested repo tree into ONION_CHEATS_DIR. */
-  static int flattenInstallTree(const std::string &root);
+  /** Copy HENCC json/shn/mc4 files into ONION_CHEATS_DIR, keeping names. */
+  static int flattenInstallTree(const std::string &root,
+                                onion_cheat_progress_fn progress,
+                                void *progress_user,
+                                onion_cheat_cancel_fn should_cancel,
+                                void *cancel_user);
 };
 
 } // namespace onion::cheats

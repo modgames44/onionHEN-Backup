@@ -17,7 +17,6 @@ along with this program; see the file COPYING. If not, see
 #include "detour.h"
 #include "debug_settings_route_runtime.hpp"
 #include "hooked_funcs.hpp"
-#include "appinst_types.hpp"
 #include "defs.h"
 #include "external_symbols.hpp"
 #include "homeui_top_nav_patch.hpp"
@@ -78,6 +77,9 @@ void __syscall() {
 }
 
 void (*OnRender_orig)(MonoObject* instance);
+void (*oUserCustomElementReset)(MonoObject* instance, MonoObject* item) = nullptr;
+void (*oSettingPageStackOnPopping)(MonoObject* instance, MonoObject* outgoing,
+                                   MonoObject* incoming) = nullptr;
 MonoObject* rootWidget = nullptr;
 MonoObject* font = nullptr;
 void (*Orig_ReloadApp)(MonoString* str) = nullptr;
@@ -85,15 +87,7 @@ void (*Orig_ReloadApp)(MonoString* str) = nullptr;
 // Defined in prx_install / prx_overlay
 void ReloadApp(MonoString* str);
 void OnRender_Hook(MonoObject* instance);
-void* dialogue_thread(void* arg);
 int KillAppWithReason_Hook(int appId, int reason);
-
-extern int (*sceAppInstUtilInstallByPackage_orig)(MetaInfo* arg1,
-                                                  SceAppInstallPkgInfo* pkg_info,
-                                                  PlayGoInfo* arg2);
-int sceAppInstUtilInstallByPackage_hook(MetaInfo* arg1,
-                                        SceAppInstallPkgInfo* pkg_info,
-                                        PlayGoInfo* arg2);
 
 // ---------------------------------------------------------------------------
 // Init constants
@@ -177,7 +171,6 @@ struct ShellImages {
   MonoImage* lnc = nullptr; // optional
   MonoImage* react_common = nullptr;
   MonoImage* rn_shell = nullptr;
-  MonoImage* app_install = nullptr;
   MonoImage* pui = nullptr;
 };
 
@@ -194,16 +187,7 @@ MonoImage* require_dll(const char* name) {
 // Phase 1: native dynlib symbols
 // ---------------------------------------------------------------------------
 
-bool resolve_native_symbols(pid_t pid, void*& out_sceAppInstUtilInstallByPackage) {
-  // Locals required by KERNEL_DLSYM (writes into a named variable).
-  static int (*sceAppInstUtilInstallByPackage)(MetaInfo*, SceAppInstallPkgInfo*,
-                                               PlayGoInfo*) = nullptr;
-
-  int appinstaller = get_module_handle(pid, "libSceAppInstUtil.sprx");
-  KERNEL_DLSYM(appinstaller, sceAppInstUtilInstallByPackage);
-  out_sceAppInstUtilInstallByPackage =
-      reinterpret_cast<void*>(sceAppInstUtilInstallByPackage);
-
+bool resolve_native_symbols(pid_t pid) {
   int libkernelsys = get_module_handle(pid, "libkernel_sys.sprx");
   KERNEL_DLSYM(libkernelsys, sceKernelDebugOutText);
   KERNEL_DLSYM(libkernelsys, sceKernelMkdir);
@@ -256,6 +240,18 @@ bool resolve_native_symbols(pid_t pid, void*& out_sceAppInstUtilInstallByPackage
 
   int reg = get_module_handle(pid, "libSceRegMgr.sprx");
   KERNEL_DLSYM(reg, sceRegMgrGetInt);
+
+  int remoteplay = get_module_handle(pid, "libSceRemoteplay.sprx");
+  LOG_DEBUG("Remote Play module handle: %d", remoteplay);
+  KERNEL_DLSYM(remoteplay, sceRemoteplayInitialize);
+  KERNEL_DLSYM(remoteplay, sceRemoteplayGeneratePinCode);
+  KERNEL_DLSYM(remoteplay, sceRemoteplayConfirmDeviceRegist);
+  KERNEL_DLSYM(remoteplay, sceRemoteplayNotifyPinCodeError);
+  LOG_DEBUG("Remote Play symbols: init=%p pin=%p confirm=%p invalidate=%p",
+            reinterpret_cast<void *>(sceRemoteplayInitialize),
+            reinterpret_cast<void *>(sceRemoteplayGeneratePinCode),
+            reinterpret_cast<void *>(sceRemoteplayConfirmDeviceRegist),
+            reinterpret_cast<void *>(sceRemoteplayNotifyPinCodeError));
 
   return true;
 }
@@ -417,7 +413,6 @@ bool load_shell_images(ShellImages& out) {
 
   out.react_common = require_dll("ReactNative.Vsh.Common.dll");
   out.rn_shell = require_dll("Sce.Vsh.ShellUI.ReactNativeShellApp.dll");
-  out.app_install = require_dll("Sce.Vsh.AppInstUtilWrapper.dll");
   out.pui = require_dll("Sce.PlayStation.PUI.dll");
 
   // Publish images other modules need
@@ -426,8 +421,7 @@ bool load_shell_images(ShellImages& out) {
   pui_img = out.pui;
 
   return out.legacy && out.mscorlib && out.react_pui && out.app_system && out.core &&
-         out.capture_menu && out.react_common && out.rn_shell && out.app_install &&
-         out.pui;
+         out.capture_menu && out.react_common && out.rn_shell && out.pui;
 }
 
 // ---------------------------------------------------------------------------
@@ -554,15 +548,20 @@ bool install_hooks(const ShellImages& img) {
       {"SettingPage.OnCreating", img.legacy, UI3_dec.c_str(), "SettingPage",
        "OnCreating", 1, reinterpret_cast<void*>(&OnPreCreate_Hook),
        reinterpret_cast<void**>(&oOnPreCreate), false},
+      {"UserCustomElementUI.Reset", img.legacy, UI3_dec.c_str(),
+       "UserCustomElementUI", "Reset", 1,
+       reinterpret_cast<void*>(&UserCustomElementReset_Hook),
+       reinterpret_cast<void**>(&oUserCustomElementReset), false},
+      {"SettingPageStack.OnPopping", img.legacy, UI3_dec.c_str(),
+       "SettingPageStack", "OnPopping", 2,
+       reinterpret_cast<void *>(&SettingPageStackOnPopping_Hook),
+       reinterpret_cast<void **>(&oSettingPageStackOnPopping), false},
       {"SettingsPlugin.GetString", img.legacy, UI3_dec.c_str(), "SettingsPlugin",
        "GetString", 1, reinterpret_cast<void*>(&GetString_Hook),
        reinterpret_cast<void**>(&oGetString), true},
       {"EventManager.OnShareButton", img.capture_menu, "Sce.Vsh.ShellUI.CaptureMenu",
        "EventManager", "OnShareButton", 1, reinterpret_cast<void*>(&OnShareButton),
        reinterpret_cast<void**>(&OnShareButton_orig), false},
-      {"PowerManager.Terminate", img.app_system, "Sce.Vsh.ShellUI.AppSystem",
-       "PowerManager", "Terminate", 0, reinterpret_cast<void*>(&Terminate),
-       reinterpret_cast<void**>(&oTerminate), false},
   };
 
   for (const MonoHookSpec& h : mono_hooks) {
@@ -691,8 +690,6 @@ void setup_proc_hooks() {
 }
 
 void run_keep_alive() {
-  pthread_t thread_id{};
-  scePthreadCreate(&thread_id, nullptr, dialogue_thread, nullptr, "dialogue_thread");
   // Publish the initialized SceShellUI process instance.  The daemon keeps
   // this marker so a restart cannot inject a second Toolbox into the same PID.
   onion_ready_signal_pid(ONION_READY_TOOLBOX, getpid());
@@ -719,10 +716,7 @@ int main(int argc, char const* argv[]) {
   const pid_t pid = getpid();
   AuthIdGuard auth(pid, set_ucred_to_ptrace());
 
-  void* appinst_fn = nullptr;
-  (void)appinst_fn;
-
-  if (!resolve_native_symbols(pid, appinst_fn))
+  if (!resolve_native_symbols(pid))
     return -1;
 
   LOG_DEBUG("Starting ShellUI Module ....");
@@ -786,17 +780,11 @@ int main(int argc, char const* argv[]) {
 
   shellui_hooks_publish_ready();
   /*
-   * home_screen.show_title_ids spoofs RegMgr as soon as hooks are ready, but
-   * home already cached the old value. ReloadApp must run on the UI thread
-   * (OnRender), not this inject worker. Queue a one-shot; no wall-clock delay —
-   * the next
-   * OnRender after hooks-ready is the readiness gate (onion_ready TOOLBOX is
-   * only a cross-process marker for the daemon, set later in keep-alive).
+   * Home already cached pre-inject state. Display-TID spoof and the top-nav
+   * RNPS patch both need NPXS40002 ReloadApp on the UI thread (OnRender), not
+   * this inject worker. One pending flag coalesces both reasons.
    */
-  if (g_settings.display_tids) {
-    shellui_request_display_tids_home_reload();
-  }
-  shellui_request_homeui_top_nav_reload();
+  shellui_request_home_reload();
   hooked = true;
   run_keep_alive();
   return 0;

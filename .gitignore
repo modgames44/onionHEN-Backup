@@ -8,6 +8,7 @@
 # Build trees / final artifacts (default: repo-root build/)
 /build/
 /.cache/
+/.docker/
 source/build/
 source/util/build/
 source/**/CMakeFiles/
@@ -40,3 +41,6 @@ source/aerolib.csv
 *.lnk
 
 /scripts/__pycache__
+
+# Machine-local helpers (firmware dump verifiers, etc.)
+/.local/

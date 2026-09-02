@@ -28,6 +28,8 @@ static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
 static char g_tag[LOG_TAG_MAX] = "OnionHEN";
 static char g_log_path[LOG_PATH_MAX] = "";
 static int g_fd = -1;
+static char g_crash_path[LOG_PATH_MAX] = "";
+static int g_crash_fd = -1;
 static size_t g_max_bytes = ONION_LOG_DEFAULT_MAX_BYTES;
 
 volatile int onion_log_runtime_level = ONION_LOG_INFO;
@@ -85,6 +87,13 @@ static void close_file_locked(void) {
   if (g_fd >= 0) {
     close(g_fd);
     g_fd = -1;
+  }
+}
+
+static void close_crash_file_locked(void) {
+  if (g_crash_fd >= 0) {
+    close(g_crash_fd);
+    g_crash_fd = -1;
   }
 }
 
@@ -249,6 +258,19 @@ void onion_log_configure(const char *tag, const char *log_path) {
   pthread_mutex_unlock(&g_lock);
 }
 
+void onion_log_configure_crash(const char *crash_path) {
+  pthread_mutex_lock(&g_lock);
+  close_crash_file_locked();
+  if (crash_path && crash_path[0]) {
+    snprintf(g_crash_path, sizeof(g_crash_path), "%s", crash_path);
+    g_crash_fd =
+        open(g_crash_path, O_WRONLY | O_CREAT | O_APPEND, 0777);
+  } else {
+    g_crash_path[0] = '\0';
+  }
+  pthread_mutex_unlock(&g_lock);
+}
+
 void onion_log_set_max_bytes(size_t max_bytes) {
   pthread_mutex_lock(&g_lock);
   g_max_bytes = (max_bytes == 0) ? ONION_LOG_DEFAULT_MAX_BYTES : max_bytes;
@@ -258,6 +280,7 @@ void onion_log_set_max_bytes(size_t max_bytes) {
 void onion_log_shutdown(void) {
   pthread_mutex_lock(&g_lock);
   close_file_locked();
+  close_crash_file_locked();
   pthread_mutex_unlock(&g_lock);
 }
 
@@ -314,5 +337,8 @@ void onion_log_emergency(const char *fmt, ...) {
   (void)!write(STDOUT_FILENO, msg, len);
   if (g_fd >= 0) {
     (void)!write(g_fd, msg, len);
+  }
+  if (g_crash_fd >= 0) {
+    (void)!write(g_crash_fd, msg, len);
   }
 }

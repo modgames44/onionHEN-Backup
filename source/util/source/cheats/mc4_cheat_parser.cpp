@@ -75,7 +75,7 @@ public:
     const int rc = parseXmlBuffer(xml, out);
     onion_cheat_secure_zero(xml, std::strlen(xml));
     free(xml);
-    LOG_INFO("[engine] mc4 cheats=%zu rc=%d", out.cheat_count, rc);
+    LOG_DEBUG("[engine] mc4 cheats=%zu rc=%d", out.cheat_count, rc);
     return rc;
   }
 };

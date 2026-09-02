@@ -1,8 +1,8 @@
 # OnionHEN — source tree
 
-This directory is the CMake project for **OnionHEN**, a community continuation of **etaHEN** (LightningMods), licensed under **GPLv3**.
-
-OnionHEN is based on etaHEN’s open-source release. See the [root README](../README.md) for project goals, credits to **GoldHEN** and **etaHEN**, and full documentation.
+This directory contains the **OnionHEN** CMake targets and first-party source,
+licensed under **GPLv3**. See the [root README](../README.md) for supported
+features, usage, configuration, and credits.
 
 ## Layout
 

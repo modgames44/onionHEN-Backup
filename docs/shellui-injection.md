@@ -1,102 +1,101 @@
-# ShellUI injection flow & kylin-core libNineS fixes
+# ShellUI injection contract
 
-## Call path (OnionHEN)
+This document defines the active ShellUI injection path, its synchronization
+rules, and its failure behavior.
 
+## Runtime flow
+
+```text
+daemon: cmd_enable_toolbox()          [daemon/source/daemon_inject.cpp]
+  |- get_shellui_pid()                find SceShellUI
+  `- Inject_Toolbox(pid, shellui.elf) [libNineS/src/main.c]
+       `- inject_elf(proc, elf)       [libNineS/src/injector.c]
+            |- set_ucred_to_ptrace() once for the inject window
+            |- pt_attach(SceShellUI)
+            |- init_remote_function_pointers()
+            |- elfldr_load()
+            |- elfldr_payload_args()
+            |- map and copy the bootstrap stager
+            |- map and copy the SCEFunctions block
+            |- pt_call2(bootstrap) -> remote pthread_create(elf_main)
+            `- pt_detach() and restore the caller authid
 ```
-daemon: cmd_enable_toolbox()          [daemon/source/msg.cpp]
-  ├─ get_shellui_pid()                // find SceShellUI
-  └─ Inject_Toolbox(pid, shellui.elf) [libNineS/src/main.c]
-       └─ inject_elf(proc, elf)       [libNineS/src/injector.c]
-            ├─ set_ucred_to_ptrace() once (PTRACE_AUTHID)
-            ├─ pt_attach(SceShellUI)
-            ├─ init_remote_function_pointers()  // malloc, pthread_create, …
-            ├─ elfldr_load()                    // map ELF into target
-            ├─ elfldr_payload_args()
-            ├─ mmap bootstrap stager + copyin
-            ├─ mmap SCEFunctions blob + copyin
-            ├─ pt_call2(bootstrap) → remote pthread_create(elf_main)
-            │     stager ends with int3
-            └─ pt_detach + restore authid
+
+The remote stager terminates with `int3`. `pt_call2` waits for that stop before
+restoring the interrupted ShellUI registers.
+
+## Readiness identity
+
+After every required hook is ready, `shellui.elf` writes its PID to:
+
+```text
+/system_tmp/onionhen/ready/toolbox
 ```
 
-After all required hooks are installed, the ShellUI payload publishes its own
-PID in `/system_tmp/onionhen/ready/toolbox`. The daemon waits up to 45 seconds
-for the expected PID, not merely for file existence.
+The daemon waits up to 45 seconds for the expected PID. The marker is an
+instance identity, not a boolean flag:
 
-The marker is intentionally retained. Before injecting, the daemon compares
-its value with the current `SceShellUI` PID:
+- matching PID means the current ShellUI instance is initialized;
+- missing or different PID requires injection into the current process;
+- a PID change during the handshake invalidates the acknowledgement.
 
-- same PID: that ShellUI process instance is already initialized; skip inject;
-- different/missing PID: clear stale state, inject, then wait for the new PID;
-- ShellUI changes PID during the handshake: reject the acknowledgement.
+`ToolboxInject` serializes the identity check, injection, and readiness wait.
+Cold start and util reinjection therefore cannot ptrace the same ShellUI
+process concurrently.
 
-`ToolboxInjectionCoordinator` serializes this check/inject/wait sequence so
-cold-start and util reinjection requests cannot ptrace the same ShellUI in
-parallel. This follows kstuff-lite's process-instance model while retaining the
-stronger post-hook ready acknowledgement.
+After Rest Mode, daemon observes the new `NPXS40087` process through SceSysCore
+`NOTE_EXEC`, waits for `libSceNpTrophy.sprx` and `libSceNpTrophy2.sprx`, and
+then runs the same serialized injection flow.
 
-### Live ShellUI hook safety
+## Injection invariants
 
-ShellUI continues handling input after the injector detaches while the payload
-thread is still installing hooks. Two safeguards keep that window safe:
+| Area | Contract |
+|------|----------|
+| Authid | `inject_elf` enters one `PTRACE_AUTHID` window and restores the caller's authid on every exit path |
+| ptrace | Calls execute inside that credential window without per-call authid changes |
+| Remote calls | `pt_call`, `pt_call2`, and `pt_syscall` use an ABI-aligned private stack below the interrupted frame and outside the 128-byte red zone |
+| Register restore | `pt_call2` waits for the stager stop before restoring saved registers |
+| Mapping | Null, `MAP_FAILED`, mprotect, and copyin failures abort injection |
+| Attach state | A successful detach clears the attached state; cleanup detaches whenever an attach completed |
+| Return value | Any failed stage returns failure to the daemon and cannot publish Toolbox readiness |
 
-- `TrampolineArena` uses non-fixed mmap hints and page-sized bump allocation;
-  every trampoline has a unique, non-overlapping address within rel32 reach of
-  its target. It never relies on `MAP_FIXED | MAP_EXCL` and fails closed when
-  no suitable mapping exists.
-- hook callbacks remain pass-through while lifecycle state is `Installing`.
-  Only after every detour and shared dependency is ready does the payload
-  publish `Ready` and the PID marker. Controller, navigation, render, registry,
-  capture, and resource hooks therefore call their originals during install.
+Single-step return detection compares against the private entry stack pointer.
+The invariant is `rsp % 16 == 8` at the remote call boundary.
 
-kylin-core uses the same `inject_elf()` path for ShellUI overlay injection (`overlay_service.c` → `inject_elf`), plus higher-level retries / kill-respawn / boot-id skip that live outside libNineS.
+## Hook installation safety
 
-## Inconsistencies found (OnionHEN vs kylin-core)
+ShellUI remains active while the payload thread installs hooks. Two mechanisms
+keep callbacks coherent during that window:
 
-| Area | OnionHEN (before) | kylin-core | Risk |
-|------|-----------------|------------|------|
-| `sys_ptrace` | Flip authid to debugger **on every** ptrace call, then restore | Direct `syscall(SYS_ptrace)` | **Thread-unsafe race** between concurrent ptrace ops; can SIGSEGV daemon or corrupt authid |
-| `pt_call2` | `pt_continue` then **immediately** `pt_setregs(bak)` | `pt_continue` → **`waitpid`** → then restore regs | **Critical race**: restores ShellUI registers while bootstrap still runs → crash / freeze / power loss |
-| `inject_elf` authid | wrong id / no restore (historical) | `set_ucred_to_ptrace()` + restore on all exits | Wrong id → attach fails; no restore → daemon stuck elevated |
-| Error paths | Often leave `status=true` on load/mmap failure | Set `status=false` on each failure | Caller thinks inject succeeded |
-| `MAP_FAILED` | Only checks `!bootstrap` | Also rejects `(uint64_t)-1` | mmap failure treated as success addr |
-| mprotect / copyin | Unchecked | Checked, fail inject | Partial maps then trigger entry |
-| `attached` flag | Not cleared after detach | Cleared when detach succeeds | Stale attach state on retry |
+- `TrampolineArena` uses non-fixed mmap hints and page-sized bump allocation.
+  Every trampoline has a unique, non-overlapping address within rel32 reach of
+  its target. Allocation fails closed when no valid mapping is available.
+- Hook callbacks remain pass-through while lifecycle state is `Installing`.
+  The payload publishes `Ready` only after all detours and shared dependencies
+  are initialized.
 
-## Fixes adopted in OnionHEN
+Controller, navigation, render, registry, capture, and resource hooks call
+their original functions until the lifecycle barrier reaches `Ready`.
 
-Ported into `source/libNineS/src/pt.c` and `source/libNineS/src/injector.c` (without kylin-specific logger; uses `ps5/klog`).
+## Failure behavior
 
-1. **`set_ucred_to_ptrace()`** at `inject_elf` entry/exit — sets  
-   `PTRACE_AUTHID` (`0x4800000000010003`), never `DEBUG_AUTHID` (`…0006`).  
-2. **No per-ptrace authid flip** in `sys_ptrace`  
-3. **`waitpid` after stager `pt_continue`** in `pt_call2`  
-4. **Strict validation** of null args, entry/args, mmap, mprotect, copyin  
-5. **Clear `attached`** on successful detach; always restore prior authid  
-6. **Unique trampoline arena** — no fixed mappings or per-hook unmap; explicit
-   overlap registry and rel32 range checks
-7. **Hook lifecycle barrier** — callbacks are pass-through until the complete
-   ShellUI install transaction publishes `Ready`
-8. **Private stack for remote pt_call / pt_call2 / pt_syscall** — hijacked
-   ShellUI threads keep a private ABI-aligned window below the interrupted
-   frame (`rsp % 16 == 8`, clear of the 128-byte red zone). Single-step
-   return detection compares against that entry rsp, not the original frame
-   rsp (which would keep stepping into the garbage return target). This
-   addresses mid-inject Mono SIGSEGV in `SwapBuffers` / `GetIntNative` with
-   "instruction pointer is NULL" before any toolbox hook log appears.
+An injection failure has these observable results:
 
-## Not ported (higher-level kylin-core only)
+1. The daemon receives a failed injection result.
+2. The target is detached when attachment succeeded.
+3. The daemon authid is restored.
+4. The expected PID is not published as ready.
+5. A later serialized request may retry the current ShellUI instance.
 
-These live in `kylin-core/src/services/overlay_service.c`, not libNineS:
+The injector does not kill or respawn ShellUI as part of this operation.
 
-- Multi-attempt inject + kill ShellUI + wait for respawn
+## Source map
 
-OnionHEN now provides in-process injection serialization and PID-bound
-already-injected detection. Optional follow-up: add retry/respawn around
-`cmd_enable_toolbox()` if field failure rate stays high.
-
-## Upstream files for reference
-
-- `kylin-core/third_party/libNineS/src/pt.c`
-- `kylin-core/third_party/libNineS/src/injector.c`
-- `kylin-core/src/services/overlay_service.c`
+| Responsibility | Source |
+|----------------|--------|
+| Request serialization and PID readiness | `source/daemon/source/daemon_inject.cpp` |
+| Injection orchestration | `source/libNineS/src/main.c` |
+| ELF mapping and stager launch | `source/libNineS/src/injector.c` |
+| Remote ptrace calls | `source/libonion_elfldr/source/pt.c` |
+| Trampoline allocation | `source/libonion_detour/source/trampoline_arena.cpp` |
+| Hook lifecycle barrier | `source/shellui/src/hook_lifecycle.cpp` |

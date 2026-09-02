@@ -1,5 +1,6 @@
 /* Host tests for onion_notify_format (pure string path). */
 #include "test_harness.h"
+#include "cJSON.hpp"
 
 #include <onion/notify.h>
 
@@ -42,6 +43,44 @@ static int test_notify_send_noop(void) {
   /* hits sceKernelSendNotificationRequest stub — must not crash */
   onion_notify(1, "host test notify %d", 7);
   onion_notify_debug("host test debug notify %d", 7);
+  return 0;
+}
+
+static unsigned char g_debug_notify_request[0xC30];
+static size_t g_debug_notify_request_size;
+
+static int32_t capture_debug_notify(int32_t device, void *request, size_t size,
+                                    int32_t blocking) {
+  (void)device;
+  (void)blocking;
+  g_debug_notify_request_size = size;
+  if (request && size <= sizeof(g_debug_notify_request))
+    memcpy(g_debug_notify_request, request, size);
+  return 0;
+}
+
+static int test_notify_debug_localized(void) {
+  memset(g_debug_notify_request, 0xff, sizeof(g_debug_notify_request));
+  g_debug_notify_request_size = 0;
+  onion_notify_set_send(capture_debug_notify);
+  onion_notify_set_language(ONION_NOTIFY_LANG_ZH_HANS);
+
+  onion_notify_debug("notify.remote_play.pairing_cancelled");
+
+  TEST_ASSERT_TRUE(g_debug_notify_request_size ==
+                   sizeof(g_debug_notify_request));
+  TEST_ASSERT_TRUE(g_debug_notify_request[0x2C] == 0);
+  TEST_ASSERT_STREQ("远程游玩配对已中止。",
+                    (const char *)&g_debug_notify_request[0x2D]);
+  TEST_ASSERT_TRUE(g_debug_notify_request[0x42D] == '\0');
+
+  onion_notify_set_language(ONION_NOTIFY_LANG_EN);
+  onion_notify_debug("notify.remote_play.paired");
+  TEST_ASSERT_TRUE(g_debug_notify_request[0x2C] == 0);
+  TEST_ASSERT_STREQ("Remote Play device paired.",
+                    (const char *)&g_debug_notify_request[0x2D]);
+
+  onion_notify_set_send(NULL);
   return 0;
 }
 
@@ -192,12 +231,32 @@ static int32_t capture_rich_notify(int32_t user_id, bool is_logged,
 static int test_notify_rich_formats_payload(void) {
   g_rich_payload[0] = '\0';
   onion_notify_set_rich_send(capture_rich_notify);
-  onion_notify_rich("Title", "Sub \"quoted\"", "/icon.png", "download", "42");
-  TEST_ASSERT_TRUE(strstr(g_rich_payload, "InteractiveToastTemplateB") != NULL);
-  TEST_ASSERT_TRUE(strstr(g_rich_payload, "\"body\": \"Title\"") != NULL);
-  TEST_ASSERT_TRUE(strstr(g_rich_payload, "Sub \\\"quoted\\\"") != NULL);
-  TEST_ASSERT_TRUE(strstr(g_rich_payload, "\"localNotificationId\": \"42\"") !=
-                   NULL);
+  onion_notify_rich("Title", "Sub \"quoted\"", "/icon\"quoted.png",
+                    "download", "42");
+  cJSON *root = cJSON_Parse(g_rich_payload);
+  cJSON *raw = cJSON_GetObjectItemCaseSensitive(root, "rawData");
+  cJSON *view = cJSON_GetObjectItemCaseSensitive(raw, "viewData");
+  cJSON *message = cJSON_GetObjectItemCaseSensitive(view, "message");
+  cJSON *sub_message = cJSON_GetObjectItemCaseSensitive(view, "subMessage");
+  cJSON *icon = cJSON_GetObjectItemCaseSensitive(view, "icon");
+  cJSON *icon_params = cJSON_GetObjectItemCaseSensitive(icon, "parameters");
+  TEST_ASSERT_TRUE(cJSON_IsObject(root));
+  TEST_ASSERT_STREQ("InteractiveToastTemplateB",
+                    cJSON_GetObjectItemCaseSensitive(raw, "viewTemplateType")
+                        ->valuestring);
+  TEST_ASSERT_STREQ(
+      "Title", cJSON_GetObjectItemCaseSensitive(message, "body")->valuestring);
+  TEST_ASSERT_STREQ("Sub \"quoted\"",
+                    cJSON_GetObjectItemCaseSensitive(sub_message, "body")
+                        ->valuestring);
+  TEST_ASSERT_STREQ("/icon\"quoted.png",
+                    cJSON_GetObjectItemCaseSensitive(icon_params, "url")
+                        ->valuestring);
+  TEST_ASSERT_STREQ("42",
+                    cJSON_GetObjectItemCaseSensitive(root,
+                                                     "localNotificationId")
+                        ->valuestring);
+  cJSON_Delete(root);
   return 0;
 }
 
@@ -219,6 +278,8 @@ int test_platform_notify_suite(void) {
   failures +=
       onion_test_run("notify_format_no_watermark", test_notify_format_no_watermark);
   failures += onion_test_run("notify_send_noop", test_notify_send_noop);
+  failures += onion_test_run("notify_debug_localized",
+                             test_notify_debug_localized);
   failures += onion_test_run("notify_language_resolution",
                              test_notify_language_resolution);
   failures += onion_test_run("notify_format_localized",

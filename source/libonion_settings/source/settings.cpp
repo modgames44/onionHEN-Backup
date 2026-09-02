@@ -50,10 +50,6 @@ int atoi_def(const char *s, int def) {
   return s ? atoi(s) : def;
 }
 
-long atol_def(const char *s, long def) {
-  return s ? atol(s) : def;
-}
-
 bool streq_ci(const char *a, const char *b) {
   if (!a || !b) {
     return false;
@@ -91,11 +87,6 @@ bool parse_bool(const char *s, bool def) {
 int parse_int_range(const char *s, int def, int min, int max) {
   const int v = atoi_def(s, def);
   return v < min || v > max ? def : v;
-}
-
-uint64_t parse_u64(const char *s, uint64_t def) {
-  const long v = atol_def(s, static_cast<long>(def));
-  return v < 0 ? def : static_cast<uint64_t>(v);
 }
 
 int parse_language(const char *s, int def) {
@@ -265,6 +256,31 @@ const char *cheat_backend_name(bool libhijacker) {
   return libhijacker ? "libhijacker" : "default";
 }
 
+int parse_cheats_mirror(const char *s, int def) {
+  if (streq_ci(s, "auto")) {
+    return kCheatsMirrorAuto;
+  }
+  if (streq_ci(s, "github")) {
+    return kCheatsMirrorGithub;
+  }
+  if (streq_ci(s, "cnb") || streq_ci(s, "cnb.cool")) {
+    return kCheatsMirrorCnb;
+  }
+  return def;
+}
+
+const char *cheats_mirror_name(int v) {
+  switch (v) {
+  case kCheatsMirrorGithub:
+    return "github";
+  case kCheatsMirrorCnb:
+    return "cnb";
+  case kCheatsMirrorAuto:
+  default:
+    return "auto";
+  }
+}
+
 std::string trim_copy(const std::string &value) {
   std::size_t first = 0;
   while (first < value.size() &&
@@ -411,6 +427,29 @@ const char *overlay_edge_name(int pos) {
   return pos == 2 || pos == 3 ? "bottom" : "top";
 }
 
+int parse_overlay_align(const char *s, int def) {
+  if (streq_ci(s, "left")) {
+    return kOverlayAlignLeft;
+  }
+  if (streq_ci(s, "center")) {
+    return kOverlayAlignCenter;
+  }
+  if (streq_ci(s, "right")) {
+    return kOverlayAlignRight;
+  }
+  return def;
+}
+
+const char *overlay_align_name(int align) {
+  if (align == kOverlayAlignLeft) {
+    return "left";
+  }
+  if (align == kOverlayAlignRight) {
+    return "right";
+  }
+  return "center";
+}
+
 bool parse_per_core_cpu(const char *s, bool def) {
   if (streq_ci(s, "average")) {
     return false;
@@ -516,11 +555,10 @@ bool apply_parser(IniParser *parser, Settings *out) {
   out->onionhen_game_opts =
       parse_bool(ini_get(parser, "game_menu.show_onionhen_options"),
                  out->onionhen_game_opts);
-  out->rest_mode_delay_seconds = parse_u64(
-      ini_get(parser, "rest_mode.resume_reinject_delay_seconds"),
-      out->rest_mode_delay_seconds);
   out->libhijacker_cheats = parse_libhijacker_backend(
       ini_get(parser, "cheats.memory_backend"), out->libhijacker_cheats);
+  out->cheats_mirror = parse_cheats_mirror(ini_get(parser, "cheats.mirror"),
+                                           out->cheats_mirror);
   out->app_jailbreak_enabled =
       parse_bool(ini_get(parser, "app_jailbreak.enabled"),
                  out->app_jailbreak_enabled);
@@ -553,6 +591,8 @@ bool apply_parser(IniParser *parser, Settings *out) {
       ini_get(parser, "overlay.background"), out->overlay_background);
   out->overlay_pos =
       parse_overlay_edge(ini_get(parser, "overlay.edge"), out->overlay_pos);
+  out->overlay_align =
+      parse_overlay_align(ini_get(parser, "overlay.align"), out->overlay_align);
   out->overlay_cpu =
       parse_bool(ini_get(parser, "overlay.show_cpu"), out->overlay_cpu);
   out->all_cpu_usage =
@@ -560,6 +600,8 @@ bool apply_parser(IniParser *parser, Settings *out) {
                          out->all_cpu_usage);
   out->overlay_gpu =
       parse_bool(ini_get(parser, "overlay.show_gpu"), out->overlay_gpu);
+  out->overlay_fps =
+      parse_bool(ini_get(parser, "overlay.show_fps"), out->overlay_fps);
   out->overlay_ram =
       parse_bool(ini_get(parser, "overlay.show_memory"), out->overlay_ram);
   out->overlay_ip = parse_bool(ini_get(parser, "overlay.show_ip_address"),
@@ -572,6 +614,10 @@ bool apply_parser(IniParser *parser, Settings *out) {
                              out->toolbox_shortcut_opt);
   out->kstuff_autoload =
       parse_bool(ini_get(parser, "kstuff.autoload"), out->kstuff_autoload);
+  out->ftp_autoload =
+      parse_bool(ini_get(parser, "ftp.autoload"), out->ftp_autoload);
+  out->ftp_port = parse_int_range(ini_get(parser, "ftp.port"), out->ftp_port,
+                                  1, 65535);
   return true;
 }
 
@@ -654,18 +700,15 @@ std::string settings_serialize(const Settings &in) {
   b += "# Available values: true, false\n";
   b += "show_onionhen_options=" + bool_text(in.onionhen_game_opts) + "\n";
   b += "\n";
-  b += "[rest_mode]\n";
-  b += "# resume_reinject_delay_seconds waits before Toolbox reinjection after resume.\n";
-  b += "# Available values: 0 or a positive number of seconds.\n";
-  b += "resume_reinject_delay_seconds=" +
-       std::to_string(static_cast<unsigned long long>(in.rest_mode_delay_seconds)) +
-       "\n";
-  b += "\n";
   b += "[cheats]\n";
   b += "# memory_backend selects the cheat memory access implementation.\n";
   b += "# Available values: default, libhijacker\n";
   b += "memory_backend=" + std::string(cheat_backend_name(in.libhijacker_cheats)) +
        "\n";
+  b += "# mirror selects the git host for online cheat catalogs.\n";
+  b += "# Available values: auto, github, cnb\n";
+  b += "# auto uses cnb.cool when the UI/system language is zh-Hans, otherwise GitHub.\n";
+  b += "mirror=" + std::string(cheats_mirror_name(in.cheats_mirror)) + "\n";
   b += "\n";
   b += "[app_jailbreak]\n";
   b += "# enabled controls the App lifecycle and sandbox event listeners. "
@@ -709,6 +752,9 @@ std::string settings_serialize(const Settings &in) {
   b += "# edge chooses the screen edge used by the monitor bar.\n";
   b += "# Available values: top, bottom\n";
   b += "edge=" + std::string(overlay_edge_name(in.overlay_pos)) + "\n";
+  b += "# align packs metrics to the left, center, or right of the bar.\n";
+  b += "# Available values: left, center, right\n";
+  b += "align=" + std::string(overlay_align_name(in.overlay_align)) + "\n";
   b += "# show_cpu displays CPU temperature and usage.\n";
   b += "# Available values: true, false\n";
   b += "show_cpu=" + bool_text(in.overlay_cpu) + "\n";
@@ -719,6 +765,9 @@ std::string settings_serialize(const Settings &in) {
   b += "# show_gpu displays GPU temperature and usage.\n";
   b += "# Available values: true, false\n";
   b += "show_gpu=" + bool_text(in.overlay_gpu) + "\n";
+  b += "# show_fps displays the skip-hook in-game frame rate.\n";
+  b += "# Available values: true, false\n";
+  b += "show_fps=" + bool_text(in.overlay_fps) + "\n";
   b += "# show_memory displays memory usage.\n";
   b += "# Available values: true, false\n";
   b += "show_memory=" + bool_text(in.overlay_ram) + "\n";
@@ -740,6 +789,13 @@ std::string settings_serialize(const Settings &in) {
   b += "# autoload loads kstuff when OnionHEN starts.\n";
   b += "# Available values: true, false\n";
   b += "autoload=" + bool_text(in.kstuff_autoload) + "\n";
+  b += "\n[ftp]\n";
+  b += "# autoload starts the built-in FTP server the next time OnionHEN launches.\n";
+  b += "# Available values: true, false\n";
+  b += "autoload=" + bool_text(in.ftp_autoload) + "\n";
+  b += "# port selects the TCP listen port for the built-in server.\n";
+  b += "# Available values: 1 through 65535\n";
+  b += "port=" + std::to_string(in.ftp_port) + "\n";
   return b;
 }
 

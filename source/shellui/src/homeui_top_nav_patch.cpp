@@ -336,7 +336,6 @@ static_assert(sizeof(kLegacy5x7xNewAppErrorSourcePrefix) <=
 static_assert(sizeof(kPlainJsNewAppErrorSourcePrefix) <=
               sizeof(kPlainJsOldAppErrorSource));
 
-std::atomic<bool> g_homeui_top_nav_reload_pending{false};
 #if SHELL_DEBUG == 1
 /* Latches so an unsupported HomeUI is reported once, not every reload. */
 std::atomic<bool> g_logged_non_homeui_skip{false};
@@ -1282,24 +1281,5 @@ void patch_homeui_top_nav(unsigned char *buffer, int *size_ptr,
   (void)buffer;
   (void)size_ptr;
   (void)buffer_capacity;
-#endif
-}
-
-void shellui_request_homeui_top_nav_reload(void) {
-#if SHELLUI_HOMEUI_TOP_NAV_PATCH == 1
-  g_homeui_top_nav_reload_pending.store(true, std::memory_order_release);
-  LOG_DEBUG("homeui_top_nav_patch: queued NPXS40002 reload for next UI tick");
-#endif
-}
-
-void shellui_poll_homeui_top_nav_reload(void) {
-#if SHELLUI_HOMEUI_TOP_NAV_PATCH == 1
-  if (!g_homeui_top_nav_reload_pending.exchange(false,
-                                                std::memory_order_acq_rel)) {
-    return;
-  }
-
-  LOG_DEBUG("homeui_top_nav_patch: applying NPXS40002 reload on UI thread");
-  ReloadRNPSApp("NPXS40002");
 #endif
 }

@@ -8,180 +8,6 @@
 
 #include "util_platform.h"
 
-
-/**
- * 跳过字符串中的空白字符。
- *
- * @param p 当前指针位置。
- * @param end 字符串结束指针。
- * @return 跳过空白后的新指针位置。
- */
-const char *onion_cheat_skip_ws(const char *p, const char *end) {
-  while (p < end && isspace((unsigned char)*p)) {
-    ++p;
-  }
-  return p;
-}
-
-/**
- * 在 JSON 数据中查找指定键的位置。
- * 返回键名后的冒号位置指针。
- *
- * @param start 搜索起始位置。
- * @param end 搜索结束位置。
- * @param key 待查找的键名。
- * @return 找到时返回键值对中冒号后的位置，未找到返回 NULL。
- */
-const char *onion_cheat_find_key(const char *start, const char *end,
-                                 const char *key) {
-  char pattern[64];
-  const char *p = start;
-
-  snprintf(pattern, sizeof(pattern), "\"%s\"", key);
-  while ((p = strstr(p, pattern)) != NULL) {
-    if (p >= end) {
-      return NULL;
-    }
-    p += strlen(pattern);
-    p = onion_cheat_skip_ws(p, end);
-    if (p < end && *p == ':') {
-      return p + 1;
-    }
-  }
-
-  return NULL;
-}
-
-/**
- * 查找与起始括号匹配的结束括号位置。
- * 支持嵌套括号和字符串转义。
- *
- * @param start 搜索起始位置。
- * @param end 搜索结束位置。
- * @param open_ch 起始括号字符。
- * @param close_ch 结束括号字符。
- * @return 匹配的结束括号位置，未找到返回 NULL。
- */
-const char *onion_cheat_find_matching(const char *start, const char *end,
-                                      char open_ch, char close_ch) {
-  int depth = 0;
-  bool in_string = false;
-
-  for (const char *p = start; p < end; ++p) {
-    if (*p == '"' && (p == start || p[-1] != '\\')) {
-      in_string = !in_string;
-      continue;
-    }
-    if (in_string) {
-      continue;
-    }
-    if (*p == open_ch) {
-      ++depth;
-    } else if (*p == close_ch) {
-      --depth;
-      if (depth == 0) {
-        return p;
-      }
-    }
-  }
-
-  return NULL;
-}
-
-/**
- * 从 JSON 数据中提取指定键的字符串值。
- * 自动处理引号和转义字符。
- *
- * @param start JSON 数据的起始位置。
- * @param end JSON 数据的结束位置。
- * @param key 待提取的键名。
- * @param out 输出缓冲区，用于存储提取的字符串值。
- * @param out_size 输出缓冲区的大小。
- * @return 成功返回 0，失败返回 -1。
- */
-int onion_cheat_extract_string(const char *start, const char *end,
-                               const char *key, char *out, size_t out_size) {
-  const char *p = onion_cheat_find_key(start, end, key);
-  const char *q = NULL;
-  size_t len = 0;
-
-  out[0] = '\0';
-  if (p == NULL) {
-    return -1;
-  }
-
-  p = onion_cheat_skip_ws(p, end);
-  if (p >= end || *p != '"') {
-    return -1;
-  }
-
-  ++p;
-  q = p;
-  while (q < end) {
-    if (*q == '"' && q[-1] != '\\') {
-      break;
-    }
-    ++q;
-  }
-  if (q >= end) {
-    return -1;
-  }
-
-  len = (size_t)(q - p);
-  if (len >= out_size) {
-    len = out_size - 1;
-  }
-  memcpy(out, p, len);
-  out[len] = '\0';
-  return 0;
-}
-
-/**
- * 从 JSON 数据中提取指定键的标量值（数字或字符串）。
- * 自动检测值类型，字符串值会委托给 extract_string 处理。
- *
- * @param start JSON 数据的起始位置。
- * @param end JSON 数据的结束位置。
- * @param key 待提取的键名。
- * @param out 输出缓冲区，用于存储提取的标量值字符串。
- * @param out_size 输出缓冲区的大小。
- * @return 成功返回 0，失败返回 -1。
- */
-int onion_cheat_extract_scalar(const char *start, const char *end,
-                               const char *key, char *out, size_t out_size) {
-  const char *p = onion_cheat_find_key(start, end, key);
-  const char *q = NULL;
-  size_t len = 0;
-
-  out[0] = '\0';
-  if (p == NULL) {
-    return -1;
-  }
-
-  p = onion_cheat_skip_ws(p, end);
-  if (p >= end) {
-    return -1;
-  }
-
-  if (*p == '"') {
-    return onion_cheat_extract_string(start, end, key, out, out_size);
-  }
-
-  q = p;
-  while (q < end && *q != ',' && *q != '}' && *q != ']' &&
-         !isspace((unsigned char)*q)) {
-    ++q;
-  }
-
-  len = (size_t)(q - p);
-  if (len >= out_size) {
-    len = out_size - 1;
-  }
-  memcpy(out, p, len);
-  out[len] = '\0';
-  return 0;
-}
-
 /**
  * 将十六进制字符串解码为字节数组。
  * 支持奇数长度（首字节自动补 0）。
@@ -235,8 +61,7 @@ char *onion_cheat_load_file_buffer(const char *path, long *size_out) {
   char *buf = NULL;
   size_t buf_size = 0;
 
-  LOG_INFO("[engine] load_file_buffer path=%s",
-                   path ? path : "(null)");
+  LOG_DEBUG("[engine] load_file_buffer path=%s", path ? path : "(null)");
   if (util_file_read_alloc(path, &buf, &buf_size, (size_t)-1) < 0) {
     LOG_ERROR("[engine] load_file_buffer failed path=%s", path);
     return NULL;
@@ -244,8 +69,7 @@ char *onion_cheat_load_file_buffer(const char *path, long *size_out) {
   if (size_out != NULL) {
     *size_out = (long)buf_size;
   }
-  LOG_INFO("[engine] load_file_buffer ok size=%zu",
-                   buf_size);
+  LOG_DEBUG("[engine] load_file_buffer ok size=%zu", buf_size);
   return buf;
 }
 
@@ -294,6 +118,48 @@ void onion_cheat_replace_all(char *text, size_t cap, const char *from,
   snprintf(text, cap, "%s", tmp);
   onion_cheat_secure_zero(tmp, tmp_cap);
   free(tmp);
+}
+
+/**
+ * 原地解码 XML 命名实体（&amp; &lt; &gt; &quot; &apos;）。
+ * 替换后长度只减不增。未知实体（如 &nbsp;）原样保留。
+ *
+ * @param text 待处理的字符串，可为 NULL。
+ */
+void onion_cheat_xml_unescape(char *text) {
+  static const struct {
+    const char *entity;
+    size_t len;
+    char ch;
+  } kEntities[] = {
+      {"&quot;", 6, '"'}, {"&apos;", 6, '\''}, {"&amp;", 5, '&'},
+      {"&lt;", 4, '<'},   {"&gt;", 4, '>'},
+  };
+  char *src;
+  char *dst;
+  size_t i;
+
+  if (text == NULL) {
+    return;
+  }
+  src = text;
+  dst = text;
+  while (*src != '\0') {
+    if (*src == '&') {
+      for (i = 0; i < sizeof(kEntities) / sizeof(kEntities[0]); ++i) {
+        if (strncmp(src, kEntities[i].entity, kEntities[i].len) == 0) {
+          *dst++ = kEntities[i].ch;
+          src += kEntities[i].len;
+          break;
+        }
+      }
+      if (i < sizeof(kEntities) / sizeof(kEntities[0])) {
+        continue;
+      }
+    }
+    *dst++ = *src++;
+  }
+  *dst = '\0';
 }
 
 void onion_cheat_secure_zero(void *ptr, size_t len) {

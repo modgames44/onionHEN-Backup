@@ -144,6 +144,20 @@ static int test_link_and_root_style(void) {
   return 0;
 }
 
+static int test_link_confirm(void) {
+  const std::string xml =
+      Page("id_root", "Root")
+          .link("id_download", "Download", "progress.xml", std::nullopt,
+                std::nullopt, "Continue?", "OK,Cancel")
+          .build();
+
+  TEST_ASSERT_TRUE(xml.find("file=\"progress.xml\"") != std::string::npos);
+  TEST_ASSERT_TRUE(xml.find("confirm=\"Continue?\"") != std::string::npos);
+  TEST_ASSERT_TRUE(xml.find("confirm_phrase=\"OK,Cancel\"") !=
+                   std::string::npos);
+  return 0;
+}
+
 static int test_attr_escaping_in_titles(void) {
   const std::string xml =
       Page("id", "T & T")
@@ -290,6 +304,23 @@ static int test_icons_on_every_entry_kind(void) {
   return 0;
 }
 
+static int test_legacy_user_custom_page(void) {
+  const std::string xml =
+      Page("id_progress", "Progress")
+          .root_list_size("1340,740")
+          .root_restorable(false)
+          .user_custom("custom_progress")
+          .build();
+
+  TEST_ASSERT_TRUE(xml.find("list_size=\"1340,740\"") != std::string::npos);
+  TEST_ASSERT_TRUE(xml.find("restorable=\"false\"") != std::string::npos);
+  TEST_ASSERT_TRUE(xml.find("<user_custom id=\"custom_progress\"/>") !=
+                   std::string::npos);
+  TEST_ASSERT_TRUE(xml.find("<user_custom id=\"custom_progress\" title=") ==
+                   std::string::npos);
+  return 0;
+}
+
 extern "C" int test_ps5_settings_ui_suite(void) {
   int fails = 0;
   fails += onion_test_run("ps5ui.escape", test_escape_special_chars);
@@ -299,6 +330,7 @@ extern "C" int test_ps5_settings_ui_suite(void) {
   fails += onion_test_run("ps5ui.list", test_list_and_items);
   fails += onion_test_run("ps5ui.nested_group", test_nested_group);
   fails += onion_test_run("ps5ui.link_style", test_link_and_root_style);
+  fails += onion_test_run("ps5ui.link_confirm", test_link_confirm);
   fails += onion_test_run("ps5ui.attr_escape", test_attr_escaping_in_titles);
   fails += onion_test_run("ps5ui.account_activate_confirm",
                           test_account_activate_button_confirm);
@@ -307,5 +339,7 @@ extern "C" int test_ps5_settings_ui_suite(void) {
   fails += onion_test_run("ps5ui.toolbox_skeleton", test_toolbox_like_skeleton);
   fails += onion_test_run("ps5ui.icons_everywhere",
                           test_icons_on_every_entry_kind);
+  fails += onion_test_run("ps5ui.legacy_user_custom",
+                          test_legacy_user_custom_page);
   return fails;
 }

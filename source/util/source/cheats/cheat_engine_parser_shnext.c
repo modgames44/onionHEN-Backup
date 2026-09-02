@@ -216,8 +216,8 @@ static int shnext_parse_nop(const char *value, uint8_t *out_bytes,
       nop_count <= (int)(ONION_MAX_PATCH_BYTES)) {
     memset(out_bytes, 0x90, (size_t)nop_count);
     *out_len = (size_t)nop_count;
-    LOG_INFO("[engine] shnext nop:%d -> %zu byte(s) of 0x90",
-                     nop_count, *out_len);
+    LOG_TRACE("[engine] shnext nop:%d -> %zu byte(s) of 0x90", nop_count,
+              *out_len);
     return 0;
   }
 
@@ -267,8 +267,7 @@ static int shnext_assemble(const char *asm_text, uint8_t *out_bytes,
   memcpy(out_bytes, enc, enc_size);
   *out_len = enc_size;
 
-  LOG_INFO("[engine] shnext keystone asm produced %zu byte(s)",
-                   enc_size);
+  LOG_TRACE("[engine] shnext keystone asm produced %zu byte(s)", enc_size);
 
   onion_cheat_secure_zero(enc, enc_size);
   ks_free(enc);
@@ -334,11 +333,11 @@ static int shnext_parse_variable(const cJSON *var_obj, onion_patch_t *patch) {
     }
   }
 
-  LOG_INFO("[engine] shnext var label='%s' offset=0x%llx "
-                   "on_len=%zu off_len=%zu is_asm=%d",
-                   label ? label : "(none)",
-                   (unsigned long long)patch->offset,
-                   patch->on_len, patch->off_len, patch->is_asm);
+  LOG_TRACE("[engine] shnext var label='%s' offset=0x%llx "
+            "on_len=%zu off_len=%zu is_asm=%d",
+            label ? label : "(none)",
+            (unsigned long long)patch->offset, patch->on_len, patch->off_len,
+            patch->is_asm);
 
   return 0;
 }
@@ -554,11 +553,10 @@ int onion_cheat_parse_shnext_buffer(const char *data, size_t size,
   cJSON_Delete(root);
 
   if (out->cheat_count == 0) {
-    LOG_INFO("[engine] shnext no cheats parsed");
+    LOG_DEBUG("[engine] shnext no cheats parsed");
     return -1;
   }
 
-  LOG_INFO("[engine] shnext parsed %zu cheats",
-                   out->cheat_count);
+  LOG_DEBUG("[engine] shnext parsed %zu cheats", out->cheat_count);
   return 0;
 }

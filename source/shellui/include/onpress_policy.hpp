@@ -14,10 +14,14 @@ enum class OnPressDomain : unsigned char {
   PassThrough = 0,
   Root,
   Payloads,
+  Plugins,
+  PluginConfig,
   AutoPayloads,
   Cheats,
   Account,
   Plapps,
+  Progress,
+  RemotePlay,
 };
 
 /**
@@ -30,6 +34,10 @@ constexpr OnPressDomain onpress_domain_for_page(Page page) {
     return OnPressDomain::Root;
   case Page::Payloads:
     return OnPressDomain::Payloads;
+  case Page::Plugins:
+    return OnPressDomain::Plugins;
+  case Page::PluginConfig:
+    return OnPressDomain::PluginConfig;
   case Page::AutoPayloads:
     return OnPressDomain::AutoPayloads;
   case Page::Cheats:
@@ -38,6 +46,10 @@ constexpr OnPressDomain onpress_domain_for_page(Page page) {
     return OnPressDomain::Account;
   case Page::Plapps:
     return OnPressDomain::Plapps;
+  case Page::CheatProgress:
+    return OnPressDomain::Progress;
+  case Page::RemotePlay:
+    return OnPressDomain::RemotePlay;
   case Page::None:
   case Page::SuperuserPass:
   case Page::RedirectOgDebug:

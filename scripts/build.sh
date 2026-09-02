@@ -4,7 +4,7 @@
 # Phases:
 #   1) configure (prospero-cmake / PS5 payload SDK)
 #   2) build libs + shellui
-#   3) stage external dependency blob (kstuff)
+#   3) stage the kstuff dependency; ftpsrv is compiled into util from source
 #   4) build daemon + util
 #   5) build bootstrapper  (-> bin/bootstrapper.elf + .lzma)
 #   6) build unpacker / OnionHEN.elf   (embeds bootstrapper.elf.lzma)
@@ -86,10 +86,11 @@ Environment:
   BUILD_DIR         Override build directory
   BUILD_TYPE        Debug|Release; skips the interactive build-type prompt
 
-Third-party (git submodules under third_party/ + release downloads):
+Third-party (pinned source under third_party/ + release fallbacks):
   See third_party/README.md and scripts/sync_dependencies.sh
 
   kstuff.elf              <- EchoStretch/kstuff-lite
+  ftpsrv                  <- drakmor/ftpsrv source, compiled into util
 
   External elfldr @ 9021 is required for initial bootstrap but is not vendored.
   OnionHEN embeds its private runtime loader as onion_elfldr.elf @ 9020.
@@ -247,7 +248,7 @@ Install a full SDK, or from SDK source tree run:
 CMAKE=("${PS5_PAYLOAD_SDK}/bin/prospero-cmake")
 
 # ---------------------------------------------------------------------------
-# External dependency staging (submodules + GitHub releases)
+# Dependency source builds and fallback staging
 # ---------------------------------------------------------------------------
 stage_dependencies() {
   if [[ "${SKIP_DEPENDENCY_SYNC}" -eq 1 ]]; then
@@ -324,6 +325,7 @@ main() {
 
   clean_build_artifacts
   ensure_sdk_libcxx
+  stage_dependencies
   configure
 
   if [[ "${CONFIGURE_ONLY}" -eq 1 ]]; then
@@ -346,31 +348,28 @@ main() {
     die "expected ${BIN}/shellui.elf after phase 1"
   fi
 
-  # Phase 2 — external embeds required by daemon/util/bootstrapper
-  # (can also run earlier; after phase1 so shellui already filled)
-  log "Phase 2/5: stage external embeds"
-  stage_dependencies
-
-  # Phase 3 — daemons
-  log "Phase 3/5: util + daemon"
+  # Phase 2 — daemons
+  log "Phase 2/5: util + daemon"
   build_targets util daemon
 
   for f in daemon.elf util.elf; do
-    [[ -f "${BIN}/${f}" ]] || die "missing ${BIN}/${f} after phase 3"
+    [[ -f "${BIN}/${f}" ]] || die "missing ${BIN}/${f} after phase 2"
     ok "built ${f}"
   done
 
-  # Phase 4 — bootstrapper (embeds daemon/util + kstuff + assets; post-build lzma)
-  log "Phase 4/5: bootstrapper"
-  build_targets bootstrapper
+  # Phase 3 — bootstrapper (embeds daemon/util + kstuff + assets)
+  log "Phase 3/5: bootstrapper"
+  build_targets bootstrapper bootstrapper_packed
 
-  # CMake post-build compresses bootstrapper.elf -> bootstrapper.elf.lzma
+  # CMake declares bootstrapper.elf.lzma as an output and compresses it from
+  # bootstrapper.elf. If the output is unavailable, retain the manual fallback
+  # for older build trees.
   # and writes bootstrapper.elf.lzma.size. If lzma replaced the elf, restore
   # naming expected by unpacker.
   if [[ -f "${BIN}/bootstrapper.elf.lzma" ]]; then
     ok "bootstrapper.elf.lzma ready"
   elif [[ -f "${BIN}/bootstrapper.elf" ]]; then
-    warn "lzma not produced by CMake post-build; packing manually"
+    warn "lzma not produced by CMake output rule; packing manually"
     local elf="${BIN}/bootstrapper.elf"
     if stat -f%z "${elf}" >/dev/null 2>&1; then
       stat -f%z "${elf}" > "${elf}.lzma.size"

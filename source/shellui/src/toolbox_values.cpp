@@ -11,6 +11,7 @@
 #include "toolbox_i18n.hpp"
 
 #include <onion/platform.h>
+#include <onion/ipc_client.hpp>
 
 #include <cstring>
 #include <string>
@@ -37,6 +38,8 @@ const ExactValueEntry kExactValues[] = {
      +[]() -> std::string { return bool_str(g_settings.overlay_background); }},
     {"id_overlay_gpu",
      +[]() -> std::string { return bool_str(g_settings.overlay_gpu); }},
+    {"id_overlay_fps",
+     +[]() -> std::string { return bool_str(g_settings.overlay_fps); }},
     {"id_overlay_ip",
      +[]() -> std::string { return bool_str(g_settings.overlay_ip); }},
     {"id_all_cpu_usage",
@@ -45,20 +48,26 @@ const ExactValueEntry kExactValues[] = {
      +[]() -> std::string { return bool_str(g_settings.overlay_cpu); }},
     {"id_overlay_ram",
      +[]() -> std::string { return bool_str(g_settings.overlay_ram); }},
-    {"id_kstuff_autoload",
+    {"id_plugin_kstuff_autoload",
      +[]() -> std::string { return bool_str(g_settings.kstuff_autoload); }},
+    {"id_plugin_ftpsrv_run",
+     +[]() -> std::string {
+       return bool_str(IPC_Client::getInstance(true).FtpStatus());
+     }},
+    {"id_plugin_ftpsrv_autoload",
+     +[]() -> std::string { return bool_str(g_settings.ftp_autoload); }},
+    {"id_plugin_ftpsrv_port",
+     +[]() -> std::string { return int_str(g_settings.ftp_port); }},
     {"id_disp_titleids",
      +[]() -> std::string { return bool_str(g_settings.display_tids); }},
     {"id_enable_fan_speed",
      +[]() -> std::string { return bool_str(g_settings.enable_fan_speed); }},
-    {"id_rest_1",
-     +[]() -> std::string {
-       return int_str(static_cast<int>(g_settings.rest_mode_delay_seconds));
-     }},
     {"id_fan_speed",
      +[]() -> std::string { return int_str(g_settings.fan_threshold); }},
     {"id_cheats_shortcut",
      +[]() -> std::string { return int_str(g_settings.cheats_shortcut_opt); }},
+    {"id_cheats_mirror",
+     +[]() -> std::string { return int_str(g_settings.cheats_mirror); }},
     {"id_ui_lang", +[]() -> std::string { return int_str(g_settings.ui_lang); }},
     {"id_log_level",
      +[]() -> std::string {
@@ -78,6 +87,8 @@ const ExactValueEntry kExactValues[] = {
      +[]() -> std::string { return bool_str(g_settings.onionhen_game_opts); }},
     {"id_overlay_change_pos",
      +[]() -> std::string { return int_str(g_settings.overlay_pos); }},
+    {"id_overlay_align",
+     +[]() -> std::string { return int_str(g_settings.overlay_align); }},
     /* Exact list id only — not id_toolbox_shortcut_N list_items. */
     {"id_toolbox_shortcut",
      +[]() -> std::string { return int_str(g_settings.toolbox_shortcut_opt); }},

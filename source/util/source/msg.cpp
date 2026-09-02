@@ -21,6 +21,7 @@ along with this program; see the file COPYING. If not, see
 #include <signal.h>
 #include <stdint.h>
 #include <unistd.h>
+#include <atomic>
 extern "C" {
 #include "common_utils.h"
 #include <sys/mount.h>
@@ -50,12 +51,8 @@ extern bool is_handler_enabled;
 #define MB(x) ((size_t)(x) << 20)
 #define READ_SIZE 0x1024
 
-extern atomic_bool no_network_rest_mode_action, real_rest_mode_detected;
-
 extern int shellui_pid_for_comp;
 extern uintptr_t code_addr;
-
-extern char ip_address[];
 
 
 extern "C" int launchApp(const char *titleId);
@@ -127,7 +124,7 @@ std::string GetPS5Version(const std::string &jsonpath) {
   } catch (const std::exception &e) {
     // Handle exceptions here, you can log the error or perform other error
     // handling tasks
-    LOG_INFO("An exception occurred: %s", e.what());
+    LOG_ERROR("Failed to read game version: %s", e.what());
     return "Error getting version";
   }
 
@@ -149,12 +146,17 @@ static void handleIPC_adapt(onion::IpcClientArgs *client, std::string &msg,
   handleIPC(client, msg, cmd);
 }
 
+static std::atomic_bool g_util_ipc_running{true};
+static std::atomic<int> g_util_ipc_server_fd{-1};
+
 static onion::IpcServerOptions g_util_ipc_opts = {
     UTIL_IPC_SOC,
     handleIPC_adapt,
     BREW_UTIL_RETURN_VALUE,
     true,
     "util",
+    &g_util_ipc_running,
+    &g_util_ipc_server_fd,
 };
 
 void *IPC_loop(void *args) {
